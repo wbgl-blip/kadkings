@@ -77,7 +77,6 @@ function computeVideoLayout(count: number): Layout {
 function parseCard(card: string | null) {
   if (!card) return { rank: "", suit: "", isRed: false, ok: false };
 
-  // Card format is like: "10♥" or "9♣" or "A♠"
   const suit = card.slice(-1);
   const rank = card.slice(0, -1);
   const isRed = suit === "♥" || suit === "♦";
@@ -116,6 +115,8 @@ export default function Page() {
   const [joining, setJoining] = useState(false);
   const [errMsg, setErrMsg] = useState<string>("");
 
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
   const [state, setState] = useState<GameState>({
     host: null,
     deck: [],
@@ -126,6 +127,30 @@ export default function Page() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  /* =========================
+     FULLSCREEN
+  ========================= */
+
+  useEffect(() => {
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    onFs();
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        // On some mobile browsers this might be ignored; safe to call.
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   /* =========================
      VIDEO HANDLING
@@ -445,14 +470,20 @@ export default function Page() {
           </div>
         </div>
 
-        <div className="statusB">
-          <span
-            className="dotB"
-            style={{
-              background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)",
-            }}
-          />
-          {connected ? "Connected" : "Not connected"}
+        <div className="topRightB">
+          <button className="fsBtnB" onClick={toggleFullscreen} type="button">
+            {isFullscreen ? "Exit" : "Fullscreen"}
+          </button>
+
+          <div className="statusB">
+            <span
+              className="dotB"
+              style={{
+                background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)",
+              }}
+            />
+            {connected ? "Connected" : "Not connected"}
+          </div>
         </div>
       </div>
 
@@ -469,7 +500,7 @@ export default function Page() {
           </div>
 
           <div className="rowB">
-            <button className="btnB btnPrimaryB" onClick={connect} disabled={joining}>
+            <button className="btnB btnPrimaryB" onClick={connect} disabled={joining} type="button">
               {joining ? "Joining..." : "Join"}
             </button>
           </div>
@@ -491,7 +522,7 @@ export default function Page() {
                 <div className="statusB" style={{ padding: "8px 10px" }}>
                   Host: <b style={{ marginLeft: 6 }}>{state.host || "—"}</b>
                 </div>
-                <button className="btnB btnDangerB btnTinyB" onClick={disconnect}>
+                <button className="btnB btnDangerB btnTinyB" onClick={disconnect} type="button">
                   Leave
                 </button>
               </div>
@@ -508,7 +539,7 @@ export default function Page() {
 
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
-              <button className="drawComboB" onClick={draw}>
+              <button className="drawComboB" onClick={draw} type="button">
                 <div className="cardSquareB">
                   {card.ok ? (
                     <div className={`miniCardB ${cardColorClass}`}>
@@ -549,10 +580,10 @@ export default function Page() {
                   <div className="drinkNumB">{state.players[me.current]?.drinks ?? 0}</div>
                 </div>
                 <div className="btnGroupB">
-                  <button className="btnB btnTinyB" onClick={() => changeDrink(-1)}>
+                  <button className="btnB btnTinyB" onClick={() => changeDrink(-1)} type="button">
                     -1
                   </button>
-                  <button className="btnB btnPrimaryB btnTinyB" onClick={() => changeDrink(1)}>
+                  <button className="btnB btnPrimaryB btnTinyB" onClick={() => changeDrink(1)} type="button">
                     +1
                   </button>
                 </div>
@@ -578,4 +609,4 @@ export default function Page() {
       )}
     </div>
   );
-}      
+              }

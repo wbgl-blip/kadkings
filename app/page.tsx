@@ -156,7 +156,6 @@ export default function Page() {
       if (id) map.set(id, el as HTMLElement);
     });
 
-    // Re-append in order
     for (const id of order) {
       const el = map.get(id);
       if (el) root.appendChild(el);
@@ -337,7 +336,6 @@ export default function Page() {
 
       setConnected(true);
 
-      // init state
       const current = stateRef.current;
       const next = clone(current);
       ensurePlayer(next, identity);
@@ -350,7 +348,6 @@ export default function Page() {
       setState(next);
       await send({ type: "STATE", data: next });
 
-      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
@@ -398,18 +395,14 @@ export default function Page() {
      UI / ORDERING / LAYOUT
   ========================= */
 
-  const players = useMemo(() => Object.values(state.players), [state.players]);
-
   const orderedPlayers = useMemo(() => {
     const mine = me.current ? [me.current] : [];
     const others = Object.keys(state.players)
       .filter((id) => id && id !== me.current)
       .sort((a, b) => a.localeCompare(b));
-    const merged = [...mine, ...others].slice(0, 6);
-    return merged;
+    return [...mine, ...others].slice(0, 6);
   }, [state.players]);
 
-  // keep tiles ordered to match orderedPlayers (best effort)
   useEffect(() => {
     if (!connected) return;
     reorderTiles(orderedPlayers);
@@ -421,437 +414,6 @@ export default function Page() {
 
   return (
     <div className="appB">
-      <style jsx global>{`
-        /* =========================
-           ONE-SCREEN B LAYOUT
-           - VIDEO biggest
-           - BOTTOM BAR compact (moved DOWN)
-        ========================= */
-
-        .appB {
-          height: 100svh;
-          width: min(520px, 100%);
-          margin: 0 auto;
-          padding: 12px;
-          display: grid;
-          grid-template-rows: auto 1fr;
-          gap: 10px;
-          overflow: hidden;
-        }
-
-        .topbarB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .brandB {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          min-width: 0;
-        }
-
-        .logoB {
-          width: 40px;
-          height: 40px;
-          border-radius: 12px;
-          display: grid;
-          place-items: center;
-          font-weight: 900;
-          letter-spacing: 0.06em;
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(34, 197, 94, 0.1));
-          border: 1px solid rgba(34, 197, 94, 0.22);
-          color: rgba(226, 232, 240, 0.95);
-          flex: 0 0 auto;
-        }
-
-        .titleB {
-          font-size: 18px;
-          font-weight: 900;
-          line-height: 1.1;
-        }
-
-        .subB {
-          font-size: 12px;
-          opacity: 0.8;
-          line-height: 1.2;
-        }
-
-        .statusB {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          font-weight: 800;
-          font-size: 12px;
-          white-space: nowrap;
-          padding: 8px 10px;
-          border-radius: 999px;
-          background: rgba(15, 23, 42, 0.55);
-          border: 1px solid rgba(148, 163, 184, 0.18);
-        }
-
-        .dotB {
-          width: 10px;
-          height: 10px;
-          border-radius: 999px;
-          box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
-        }
-
-        .shellB {
-          display: grid;
-          grid-template-rows: 1fr auto;
-          gap: 10px;
-          overflow: hidden;
-          min-height: 0;
-        }
-
-        .cardB {
-          background: rgba(15, 23, 42, 0.45);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          border-radius: 18px;
-          padding: 12px;
-          overflow: hidden;
-        }
-
-        .joinCardB {
-          display: grid;
-          gap: 10px;
-        }
-
-        .fieldB {
-          display: grid;
-          gap: 6px;
-          font-weight: 800;
-          font-size: 12px;
-          opacity: 0.95;
-        }
-
-        .fieldB input {
-          width: 100%;
-          padding: 12px 12px;
-          border-radius: 14px;
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.35);
-          color: rgba(226, 232, 240, 0.95);
-          outline: none;
-        }
-
-        .fieldB input:focus {
-          border-color: rgba(34, 197, 94, 0.35);
-          box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
-        }
-
-        .rowB {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-
-        .btnB {
-          border: 0;
-          border-radius: 14px;
-          padding: 12px 14px;
-          font-weight: 900;
-          color: rgba(226, 232, 240, 0.95);
-          background: rgba(148, 163, 184, 0.16);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-        }
-
-        .btnB:disabled {
-          opacity: 0.55;
-        }
-
-        .btnPrimaryB {
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.35), rgba(34, 197, 94, 0.18));
-          border-color: rgba(34, 197, 94, 0.28);
-        }
-
-        .btnDangerB {
-          background: linear-gradient(180deg, rgba(248, 113, 113, 0.30), rgba(248, 113, 113, 0.14));
-          border-color: rgba(248, 113, 113, 0.25);
-        }
-
-        .btnTinyB {
-          padding: 10px 12px;
-          border-radius: 12px;
-          font-size: 12px;
-        }
-
-        .noteB {
-          font-size: 12px;
-          opacity: 0.85;
-          line-height: 1.25;
-        }
-
-        /* =========================
-           VIDEO AREA (dominant)
-        ========================= */
-
-        .videoCardB {
-          display: grid;
-          grid-template-rows: auto 1fr;
-          gap: 10px;
-          min-height: 0;
-        }
-
-        .cardHeadB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .cardHeadB h2 {
-          margin: 0;
-          font-size: 14px;
-          font-weight: 900;
-          letter-spacing: 0.02em;
-        }
-
-        .videoGridB {
-          min-height: 0;
-          display: grid;
-          gap: 8px;
-          align-content: stretch;
-          justify-content: stretch;
-        }
-
-        .videoGridB[data-layout="l1"] {
-          grid-template-columns: 1fr;
-          grid-template-rows: 1fr;
-        }
-        .videoGridB[data-layout="l2"] {
-          grid-template-columns: repeat(2, 1fr);
-          grid-template-rows: 1fr;
-        }
-        .videoGridB[data-layout="l3"] {
-          grid-template-columns: repeat(3, 1fr);
-          grid-template-rows: 1fr;
-        }
-        .videoGridB[data-layout="l4"] {
-          grid-template-columns: repeat(2, 1fr);
-          grid-template-rows: repeat(2, 1fr);
-        }
-        .videoGridB[data-layout="l5"],
-        .videoGridB[data-layout="l6"] {
-          grid-template-columns: repeat(3, 1fr);
-          grid-template-rows: repeat(2, 1fr);
-        }
-
-        .vTile {
-          position: relative;
-          border-radius: 16px;
-          overflow: hidden;
-          background: rgba(2, 6, 23, 0.35);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          min-height: 0;
-        }
-
-        .vTile video {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-        }
-
-        .vTag {
-          position: absolute;
-          left: 10px;
-          bottom: 10px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 900;
-          background: rgba(2, 6, 23, 0.55);
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          color: rgba(226, 232, 240, 0.95);
-          max-width: calc(100% - 20px);
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        /* =========================
-           BOTTOM BAR (moved DOWN + compact)
-           - no extra header text
-           - combined DRAW + CARD
-        ========================= */
-
-        .bottomBarB {
-          display: grid;
-          grid-template-columns: 1.15fr 0.85fr;
-          gap: 10px;
-          min-height: 0;
-          align-items: end;
-        }
-
-        .deckMiniB {
-          display: grid;
-          grid-template-rows: auto;
-          gap: 10px;
-          min-height: 0;
-        }
-
-        .drawComboB {
-          width: 100%;
-          border: 0;
-          border-radius: 18px;
-          padding: 12px;
-          display: grid;
-          grid-template-columns: auto 1fr auto;
-          gap: 12px;
-          align-items: center;
-          color: rgba(226, 232, 240, 0.95);
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.18), rgba(2, 6, 23, 0.35));
-          border: 1px solid rgba(34, 197, 94, 0.22);
-        }
-
-        .drawComboB:active {
-          transform: translateY(1px);
-        }
-
-        .cardSquareB {
-          width: 54px;
-          height: 54px;
-          border-radius: 16px;
-          background: rgba(2, 6, 23, 0.32);
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          display: grid;
-          place-items: center;
-          overflow: hidden;
-        }
-
-        .miniCardB {
-          width: 42px;
-          height: 42px;
-          border-radius: 12px;
-          background: rgba(248, 250, 252, 0.92);
-          border: 1px solid rgba(2, 6, 23, 0.25);
-          display: grid;
-          place-items: start;
-          padding: 6px;
-        }
-
-        .miniCornerB {
-          color: rgba(2, 6, 23, 0.9);
-          font-weight: 1000;
-          font-size: 12px;
-        }
-
-        .drawTextB {
-          min-width: 0;
-          text-align: left;
-        }
-
-        .drawTitleB {
-          font-weight: 1000;
-          letter-spacing: 0.06em;
-          font-size: 16px;
-          line-height: 1.05;
-        }
-
-        .drawSubB {
-          font-size: 12px;
-          opacity: 0.8;
-          margin-top: 4px;
-          font-weight: 800;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .drawMetaB {
-          display: grid;
-          justify-items: end;
-          gap: 6px;
-        }
-
-        .metaPillB {
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 900;
-          background: rgba(2, 6, 23, 0.35);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          opacity: 0.95;
-          white-space: nowrap;
-        }
-
-        .statsMiniB {
-          display: grid;
-          grid-template-rows: auto 1fr;
-          gap: 10px;
-          min-height: 0;
-        }
-
-        .yourDrinksRowB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 12px;
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.28);
-        }
-
-        .labelMiniB {
-          font-size: 12px;
-          opacity: 0.8;
-          font-weight: 900;
-        }
-
-        .drinkNumB {
-          font-weight: 1000;
-          font-size: 18px;
-        }
-
-        .btnGroupB {
-          display: inline-flex;
-          gap: 8px;
-        }
-
-        .playersMiniListB {
-          min-height: 0;
-          overflow: auto;
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.14);
-          background: rgba(2, 6, 23, 0.18);
-        }
-
-        .pRowB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 12px;
-          border-bottom: 1px solid rgba(148, 163, 184, 0.10);
-        }
-
-        .pRowB:last-child {
-          border-bottom: 0;
-        }
-
-        .pNameB {
-          font-weight: 1000;
-        }
-
-        .pMetaB {
-          opacity: 0.9;
-          font-weight: 800;
-          font-size: 12px;
-          white-space: nowrap;
-        }
-
-        @media (max-width: 420px) {
-          .bottomBarB {
-            grid-template-columns: 1fr;
-          }
-        }
-      `}</style>
-
       <div className="topbarB">
         <div className="brandB">
           <div className="logoB">KAD</div>
@@ -900,7 +462,6 @@ export default function Page() {
         </div>
       ) : (
         <div className="shellB">
-          {/* MAIN: VIDEO (biggest) */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
@@ -923,7 +484,6 @@ export default function Page() {
             <div ref={videoRef} className="videoGridB" data-layout={layout} />
           </div>
 
-          {/* BOTTOM: compact, pushed down */}
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw}>

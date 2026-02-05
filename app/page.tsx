@@ -144,7 +144,6 @@ export default function Page() {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
       } else {
-        // On some mobile browsers this might be ignored; safe to call.
         await document.documentElement.requestFullscreen();
       }
     } catch {
@@ -233,9 +232,7 @@ export default function Page() {
   ========================= */
 
   function ensurePlayer(gs: GameState, id: string) {
-    if (!gs.players[id]) {
-      gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
-    }
+    if (!gs.players[id]) gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
   }
 
   async function draw() {
@@ -273,12 +270,7 @@ export default function Page() {
     next.players[me.current].drinks = Math.max(0, next.players[me.current].drinks + n);
 
     setState(next);
-
-    await send({
-      type: "UPDATE",
-      id: me.current,
-      patch: { drinks: next.players[me.current].drinks },
-    });
+    await send({ type: "UPDATE", id: me.current, patch: { drinks: next.players[me.current].drinks } });
   }
 
   /* =========================
@@ -322,9 +314,7 @@ export default function Page() {
 
         const tile = ensureTile(participant.identity);
         if (!tile) return;
-        if (track.kind === Track.Kind.Video) {
-          track.attach(tile.querySelector("video")!);
-        }
+        if (track.kind === Track.Kind.Video) track.attach(tile.querySelector("video")!);
       });
 
       room.on(RoomEvent.ParticipantConnected, (participant) => {
@@ -356,9 +346,7 @@ export default function Page() {
 
         if (msg.type === "DRAW") {
           const current = stateRef.current;
-          if (roomRef.current && me.current && current.host === me.current) {
-            draw();
-          }
+          if (roomRef.current && me.current && current.host === me.current) draw();
           return;
         }
 
@@ -372,12 +360,9 @@ export default function Page() {
         }
       });
 
-      room.on(RoomEvent.Disconnected, () => {
-        setConnected(false);
-      });
+      room.on(RoomEvent.Disconnected, () => setConnected(false));
 
       await room.connect(data.url, data.token);
-
       setConnected(true);
 
       const current = stateRef.current;
@@ -425,13 +410,7 @@ export default function Page() {
 
     if (videoRef.current) videoRef.current.innerHTML = "";
 
-    setState({
-      host: null,
-      deck: [],
-      currentCard: null,
-      players: {},
-    });
-
+    setState({ host: null, deck: [], currentCard: null, players: {} });
     setConnected(false);
   }
 
@@ -476,12 +455,7 @@ export default function Page() {
           </button>
 
           <div className="statusB">
-            <span
-              className="dotB"
-              style={{
-                background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)",
-              }}
-            />
+            <span className="dotB" style={{ background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)" }} />
             {connected ? "Connected" : "Not connected"}
           </div>
         </div>
@@ -538,41 +512,50 @@ export default function Page() {
           </div>
 
           <div className="bottomBarB">
+            {/* CARD-FIRST DRAW AREA */}
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw} type="button">
-                <div className="cardSquareB">
-                  {card.ok ? (
-                    <div className={`miniCardB ${cardColorClass}`}>
-                      <div className="miniCornerTL">
-                        <span className="miniRank">{card.rank}</span>
-                        <span className="miniSuit">{card.suit}</span>
+                <div className="drawLeftB">
+                  <div className="cardStackB" aria-hidden="true" />
+                  <div className="cardStackB stack2" aria-hidden="true" />
+
+                  <div className="bigCardShellB">
+                    {card.ok ? (
+                      <div className={`bigCardB ${cardColorClass}`}>
+                        <div className="bigCornerTL">
+                          <span className="bigRank">{card.rank}</span>
+                          <span className="bigSuit">{card.suit}</span>
+                        </div>
+
+                        <div className="bigSuitCenter">{card.suit}</div>
+
+                        <div className="bigCornerBR">
+                          <span className="bigRank">{card.rank}</span>
+                          <span className="bigSuit">{card.suit}</span>
+                        </div>
                       </div>
-                      <div className="miniSuitCenter">{card.suit}</div>
-                      <div className="miniCornerBR">
-                        <span className="miniRank">{card.rank}</span>
-                        <span className="miniSuit">{card.suit}</span>
+                    ) : (
+                      <div className="bigBackB">
+                        <div className="bigBackTop">KAD</div>
+                        <div className="bigBackMid">KINGS</div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="miniBackB">
-                      <div className="miniBackTop">KAD</div>
-                      <div className="miniBackMid">KINGS</div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
 
-                <div className="drawTextB">
-                  <div className="drawTitleB">DRAW CARD</div>
+                <div className="drawRightB">
+                  <div className="drawTitleB">DRAW</div>
                   <div className="drawSubB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
-                </div>
 
-                <div className="drawMetaB">
-                  <div className="metaPillB">🃏 {state.deck.length}</div>
-                  <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
+                  <div className="drawMetaRowB">
+                    <div className="metaPillB">Remaining: {state.deck.length}</div>
+                    <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
+                  </div>
                 </div>
               </button>
             </div>
 
+            {/* STATS */}
             <div className="cardB statsMiniB">
               <div className="yourDrinksRowB">
                 <div>
@@ -609,4 +592,4 @@ export default function Page() {
       )}
     </div>
   );
-              }
+    }

@@ -1,3 +1,4 @@
+/* app/page.tsx */
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -47,7 +48,6 @@ function buildDeck() {
 }
 
 function clone<T>(obj: T): T {
-  // more reliable than structuredClone across mobile browsers
   return JSON.parse(JSON.stringify(obj));
 }
 
@@ -63,14 +63,15 @@ function decode(buf: Uint8Array) {
   }
 }
 
-function computeVideoLayout(count: number): "l1" | "l2" | "l3" | "l4" | "l5" | "l6" {
-  // B: auto-scale for 1–6 players, max 3x2
-  if (count <= 1) return "l1"; // 1x1
-  if (count === 2) return "l2"; // 2x1
-  if (count === 3) return "l3"; // 3x1
-  if (count === 4) return "l4"; // 2x2
-  if (count === 5) return "l5"; // 3x2 with 2 in last row
-  return "l6"; // 3x2
+type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
+
+function computeVideoLayout(count: number): Layout {
+  if (count <= 1) return "l1";
+  if (count === 2) return "l2";
+  if (count === 3) return "l3";
+  if (count === 4) return "l4";
+  if (count === 5) return "l5";
+  return "l6";
 }
 
 /* =========================
@@ -86,7 +87,7 @@ export default function Page() {
     host: null,
     deck: [],
     currentCard: null,
-    players: {}
+    players: {},
   });
 
   const [roomCode, setRoomCode] = useState("kad");
@@ -100,7 +101,7 @@ export default function Page() {
     host: null,
     deck: [],
     currentCard: null,
-    players: {}
+    players: {},
   });
 
   useEffect(() => {
@@ -145,8 +146,24 @@ export default function Page() {
     if (el) el.remove();
   }
 
+  function reorderTiles(order: string[]) {
+    const root = videoRef.current;
+    if (!root) return;
+
+    const map = new Map<string, HTMLElement>();
+    Array.from(root.querySelectorAll(".vTile")).forEach((el) => {
+      const id = (el as HTMLElement).dataset.id || "";
+      if (id) map.set(id, el as HTMLElement);
+    });
+
+    // Re-append in order
+    for (const id of order) {
+      const el = map.get(id);
+      if (el) root.appendChild(el);
+    }
+  }
+
   async function attachLocalTracks(room: Room) {
-    // local tracks exist only after enabling cam/mic
     room.localParticipant.videoTrackPublications.forEach((pub) => {
       const track = pub.track;
       if (!track) return;
@@ -174,11 +191,7 @@ export default function Page() {
 
   function ensurePlayer(gs: GameState, id: string) {
     if (!gs.players[id]) {
-      gs.players[id] = {
-        name: id,
-        drinks: 0,
-        cardsDrawn: 0
-      };
+      gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
     }
   }
 
@@ -221,7 +234,7 @@ export default function Page() {
     await send({
       type: "UPDATE",
       id: me.current,
-      patch: { drinks: next.players[me.current].drinks }
+      patch: { drinks: next.players[me.current].drinks },
     });
   }
 
@@ -243,27 +256,21 @@ export default function Page() {
     setJoining(true);
 
     try {
-      // 1) get token + url
-      const res = await fetch(`/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`);
+      const res = await fetch(
+        `/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`
+      );
       const data = await res.json();
 
-      if (!res.ok) {
-        throw new Error(data?.error || `Token API failed (${res.status})`);
-      }
-      if (!data?.token || !data?.url) {
-        throw new Error("Token API returned missing token/url.");
-      }
+      if (!res.ok) throw new Error(data?.error || `Token API failed (${res.status})`);
+      if (!data?.token || !data?.url) throw new Error("Token API returned missing token/url.");
 
-      // 2) connect
       const room = new Room();
       roomRef.current = room;
       me.current = identity;
 
-      // ensure "me" tile early (will show once camera enabled)
       ensureTile(identity);
 
       room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
-        // ensure player exists for layout + stats list
         setState((s) => {
           const n = clone(s);
           ensurePlayer(n, participant.identity);
@@ -272,10 +279,18 @@ export default function Page() {
 
         const tile = ensureTile(participant.identity);
         if (!tile) return;
-
         if (track.kind === Track.Kind.Video) {
           track.attach(tile.querySelector("video")!);
         }
+      });
+
+      room.on(RoomEvent.ParticipantConnected, (participant) => {
+        setState((s) => {
+          const n = clone(s);
+          ensurePlayer(n, participant.identity);
+          return n;
+        });
+        ensureTile(participant.identity);
       });
 
       room.on(RoomEvent.ParticipantDisconnected, (participant) => {
@@ -283,7 +298,6 @@ export default function Page() {
         setState((s) => {
           const n = clone(s);
           if (n.players[participant.identity]) delete n.players[participant.identity];
-          // if host left, keep host as-is for now; you can add host reassignment later
           return n;
         });
       });
@@ -298,7 +312,6 @@ export default function Page() {
         }
 
         if (msg.type === "DRAW") {
-          // only host should execute draws (use ref to avoid stale state)
           const current = stateRef.current;
           if (roomRef.current && me.current && current.host === me.current) {
             draw();
@@ -322,10 +335,9 @@ export default function Page() {
 
       await room.connect(data.url, data.token);
 
-      // 3) mark connected so UI advances immediately
       setConnected(true);
 
-      // 4) initialize state (host if first)
+      // init state
       const current = stateRef.current;
       const next = clone(current);
       ensurePlayer(next, identity);
@@ -338,13 +350,13 @@ export default function Page() {
       setState(next);
       await send({ type: "STATE", data: next });
 
-      // 5) ask for camera/mic AFTER UI is advanced
+      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
         await attachLocalTracks(room);
       } catch (e: any) {
-        setErrMsg(`Connected, but camera/mic blocked: ${e?.message || e}`);
+        setErrMsg(`Camera/mic blocked: ${e?.message || e}`);
       }
     } catch (e: any) {
       setErrMsg(e?.message || String(e));
@@ -370,33 +382,50 @@ export default function Page() {
     }
     roomRef.current = null;
 
-    // clean up tiles so the next join is fresh
     if (videoRef.current) videoRef.current.innerHTML = "";
+
+    setState({
+      host: null,
+      deck: [],
+      currentCard: null,
+      players: {},
+    });
 
     setConnected(false);
   }
 
   /* =========================
-     UI (B layout)
+     UI / ORDERING / LAYOUT
   ========================= */
 
   const players = useMemo(() => Object.values(state.players), [state.players]);
 
-  // For layout sizing we want the "active tile" count. Prefer actual tiles if present.
-  const tileCount =
-    (videoRef.current?.querySelectorAll?.(".vTile")?.length || 0) > 0
-      ? (videoRef.current?.querySelectorAll?.(".vTile")?.length as number)
-      : Math.max(1, players.length || 1);
+  const orderedPlayers = useMemo(() => {
+    const mine = me.current ? [me.current] : [];
+    const others = Object.keys(state.players)
+      .filter((id) => id && id !== me.current)
+      .sort((a, b) => a.localeCompare(b));
+    const merged = [...mine, ...others].slice(0, 6);
+    return merged;
+  }, [state.players]);
 
-  const layout = computeVideoLayout(Math.min(6, Math.max(1, tileCount)));
+  // keep tiles ordered to match orderedPlayers (best effort)
+  useEffect(() => {
+    if (!connected) return;
+    reorderTiles(orderedPlayers);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, orderedPlayers.join("|")]);
+
+  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
+  const layout = computeVideoLayout(effectiveCount);
 
   return (
     <div className="appB">
       <style jsx global>{`
         /* =========================
            ONE-SCREEN B LAYOUT
-           - Players/video always visible, main focus
-           - Deck + stats compact, always visible
+           - VIDEO biggest
+           - BOTTOM BAR compact (moved DOWN)
         ========================= */
 
         .appB {
@@ -425,8 +454,8 @@ export default function Page() {
         }
 
         .logoB {
-          width: 42px;
-          height: 42px;
+          width: 40px;
+          height: 40px;
           border-radius: 12px;
           display: grid;
           place-items: center;
@@ -475,6 +504,7 @@ export default function Page() {
           grid-template-rows: 1fr auto;
           gap: 10px;
           overflow: hidden;
+          min-height: 0;
         }
 
         .cardB {
@@ -556,12 +586,12 @@ export default function Page() {
         }
 
         /* =========================
-           VIDEO AREA (main focus)
+           VIDEO AREA (dominant)
         ========================= */
 
         .videoCardB {
           display: grid;
-          grid-template-rows: auto 1fr auto;
+          grid-template-rows: auto 1fr;
           gap: 10px;
           min-height: 0;
         }
@@ -588,7 +618,6 @@ export default function Page() {
           justify-content: stretch;
         }
 
-        /* Layout variants driven by data-layout */
         .videoGridB[data-layout="l1"] {
           grid-template-columns: 1fr;
           grid-template-rows: 1fr;
@@ -645,27 +674,101 @@ export default function Page() {
         }
 
         /* =========================
-           BOTTOM BAR (compact)
+           BOTTOM BAR (moved DOWN + compact)
+           - no extra header text
+           - combined DRAW + CARD
         ========================= */
 
         .bottomBarB {
           display: grid;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: 1.15fr 0.85fr;
           gap: 10px;
           min-height: 0;
+          align-items: end;
         }
 
         .deckMiniB {
           display: grid;
-          grid-template-rows: auto auto;
-          gap: 8px;
+          grid-template-rows: auto;
+          gap: 10px;
           min-height: 0;
         }
 
-        .pillB {
-          display: inline-flex;
+        .drawComboB {
+          width: 100%;
+          border: 0;
+          border-radius: 18px;
+          padding: 12px;
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          gap: 12px;
           align-items: center;
-          justify-content: center;
+          color: rgba(226, 232, 240, 0.95);
+          background: linear-gradient(180deg, rgba(34, 197, 94, 0.18), rgba(2, 6, 23, 0.35));
+          border: 1px solid rgba(34, 197, 94, 0.22);
+        }
+
+        .drawComboB:active {
+          transform: translateY(1px);
+        }
+
+        .cardSquareB {
+          width: 54px;
+          height: 54px;
+          border-radius: 16px;
+          background: rgba(2, 6, 23, 0.32);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          display: grid;
+          place-items: center;
+          overflow: hidden;
+        }
+
+        .miniCardB {
+          width: 42px;
+          height: 42px;
+          border-radius: 12px;
+          background: rgba(248, 250, 252, 0.92);
+          border: 1px solid rgba(2, 6, 23, 0.25);
+          display: grid;
+          place-items: start;
+          padding: 6px;
+        }
+
+        .miniCornerB {
+          color: rgba(2, 6, 23, 0.9);
+          font-weight: 1000;
+          font-size: 12px;
+        }
+
+        .drawTextB {
+          min-width: 0;
+          text-align: left;
+        }
+
+        .drawTitleB {
+          font-weight: 1000;
+          letter-spacing: 0.06em;
+          font-size: 16px;
+          line-height: 1.05;
+        }
+
+        .drawSubB {
+          font-size: 12px;
+          opacity: 0.8;
+          margin-top: 4px;
+          font-weight: 800;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .drawMetaB {
+          display: grid;
+          justify-items: end;
+          gap: 6px;
+        }
+
+        .metaPillB {
           padding: 6px 10px;
           border-radius: 999px;
           font-size: 12px;
@@ -673,51 +776,13 @@ export default function Page() {
           background: rgba(2, 6, 23, 0.35);
           border: 1px solid rgba(148, 163, 184, 0.16);
           opacity: 0.95;
-        }
-
-        .deckBtnB {
-          width: 100%;
-          border: 0;
-          border-radius: 16px;
-          padding: 14px 12px;
-          font-weight: 1000;
-          letter-spacing: 0.06em;
-          color: rgba(226, 232, 240, 0.95);
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.24), rgba(34, 197, 94, 0.12));
-          border: 1px solid rgba(34, 197, 94, 0.22);
-        }
-
-        .deckBtnB:active {
-          transform: translateY(1px);
-        }
-
-        .cardNowB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 12px;
-          border-radius: 14px;
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.30);
-          font-weight: 900;
-        }
-
-        .labelMiniB {
-          font-size: 12px;
-          opacity: 0.8;
-          font-weight: 900;
-        }
-
-        .cardTextB {
-          font-size: 16px;
-          font-weight: 1000;
+          white-space: nowrap;
         }
 
         .statsMiniB {
           display: grid;
           grid-template-rows: auto 1fr;
-          gap: 8px;
+          gap: 10px;
           min-height: 0;
         }
 
@@ -727,9 +792,15 @@ export default function Page() {
           justify-content: space-between;
           gap: 10px;
           padding: 10px 12px;
-          border-radius: 14px;
+          border-radius: 16px;
           border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.30);
+          background: rgba(2, 6, 23, 0.28);
+        }
+
+        .labelMiniB {
+          font-size: 12px;
+          opacity: 0.8;
+          font-weight: 900;
         }
 
         .drinkNumB {
@@ -745,10 +816,9 @@ export default function Page() {
         .playersMiniListB {
           min-height: 0;
           overflow: auto;
-          padding-right: 4px;
-          border-radius: 14px;
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.22);
+          border-radius: 16px;
+          border: 1px solid rgba(148, 163, 184, 0.14);
+          background: rgba(2, 6, 23, 0.18);
         }
 
         .pRowB {
@@ -795,7 +865,7 @@ export default function Page() {
           <span
             className="dotB"
             style={{
-              background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)"
+              background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)",
             }}
           />
           {connected ? "Connected" : "Not connected"}
@@ -830,12 +900,14 @@ export default function Page() {
         </div>
       ) : (
         <div className="shellB">
-          {/* TOP / MAIN: VIDEO (always dominant) */}
+          {/* MAIN: VIDEO (biggest) */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
               <div className="rowB" style={{ justifyContent: "flex-end" }}>
-                <span className="pillB">Host: {state.host || "—"}</span>
+                <div className="statusB" style={{ padding: "8px 10px" }}>
+                  Host: <b style={{ marginLeft: 6 }}>{state.host || "—"}</b>
+                </div>
                 <button className="btnB btnDangerB btnTinyB" onClick={disconnect}>
                   Leave
                 </button>
@@ -849,28 +921,28 @@ export default function Page() {
             ) : null}
 
             <div ref={videoRef} className="videoGridB" data-layout={layout} />
-
-            <div className="noteB">
-              If you can’t see yourself: check browser permissions (camera/mic allowed).
-            </div>
           </div>
 
-          {/* BOTTOM: DECK + STATS (compact, always visible) */}
+          {/* BOTTOM: compact, pushed down */}
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
-              <div className="rowB" style={{ justifyContent: "space-between" }}>
-                <div className="labelMiniB">Deck</div>
-                <span className="pillB">{state.host === me.current ? "You are host" : "Tap to request draw"}</span>
-              </div>
+              <button className="drawComboB" onClick={draw}>
+                <div className="cardSquareB">
+                  <div className="miniCardB">
+                    <div className="miniCornerB">{state.currentCard || "—"}</div>
+                  </div>
+                </div>
 
-              <button className="deckBtnB" onClick={draw}>
-                DRAW
+                <div className="drawTextB">
+                  <div className="drawTitleB">DRAW CARD</div>
+                  <div className="drawSubB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
+                </div>
+
+                <div className="drawMetaB">
+                  <div className="metaPillB">🃏 {state.deck.length}</div>
+                  <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
+                </div>
               </button>
-
-              <div className="cardNowB">
-                <div className="labelMiniB">Card</div>
-                <div className="cardTextB">{state.currentCard || "—"}</div>
-              </div>
             </div>
 
             <div className="cardB statsMiniB">
@@ -890,14 +962,18 @@ export default function Page() {
               </div>
 
               <div className="playersMiniListB">
-                {players.map((p) => (
-                  <div key={p.name} className="pRowB">
-                    <div className="pNameB">{p.name}</div>
-                    <div className="pMetaB">
-                      🍺 {p.drinks} · 🃏 {p.cardsDrawn}
+                {orderedPlayers.map((id) => {
+                  const p = state.players[id];
+                  if (!p) return null;
+                  return (
+                    <div key={p.name} className="pRowB">
+                      <div className="pNameB">{p.name}</div>
+                      <div className="pMetaB">
+                        🍺 {p.drinks} · 🃏 {p.cardsDrawn}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

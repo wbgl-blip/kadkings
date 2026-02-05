@@ -314,58 +314,88 @@ input {
   min-height: 0;
 }
 
+/* =========================
+   CARD-FIRST DRAW CONTROL
+========================= */
+
 .drawComboB {
   width: 100%;
   border: 0;
   border-radius: 18px;
   padding: 12px;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: 1.25fr 0.95fr; /* CARD side bigger */
   gap: 12px;
   align-items: center;
   color: rgba(226, 232, 240, 0.95);
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.18), rgba(2, 6, 23, 0.35));
   border: 1px solid rgba(34, 197, 94, 0.22);
   cursor: pointer;
+  min-height: 96px;
 }
 
 .drawComboB:active {
   transform: translateY(1px);
 }
 
-.cardSquareB {
-  width: 60px;
-  height: 60px;
-  border-radius: 16px;
-  background: rgba(2, 6, 23, 0.32);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+.drawLeftB {
+  position: relative;
+  min-height: 84px;
   display: grid;
-  place-items: center;
-  overflow: hidden;
+  align-items: center;
 }
 
-/* MINI CARD */
+.cardStackB {
+  position: absolute;
+  width: 92px;
+  height: 72px;
+  left: 8px;
+  top: 8px;
+  border-radius: 14px;
+  background: rgba(2, 6, 23, 0.22);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  transform: rotate(-2deg);
+  filter: blur(0.0px);
+  opacity: 0.85;
+}
 
-.miniCardB {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.95);
-  border: 1px solid rgba(2, 6, 23, 0.25);
+.cardStackB.stack2 {
+  left: 12px;
+  top: 12px;
+  transform: rotate(1deg);
+  opacity: 0.65;
+}
+
+.bigCardShellB {
+  position: relative;
+  margin-left: 18px;
+  width: 108px;
+  height: 78px;
+  border-radius: 16px;
+  display: grid;
+  place-items: center;
+}
+
+.bigCardB {
+  width: 108px;
+  height: 78px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.96);
+  border: 1px solid rgba(2, 6, 23, 0.18);
   position: relative;
   overflow: hidden;
 }
 
-.miniCardB.isRed {
+.bigCardB.isRed {
   color: rgba(220, 38, 38, 0.95);
 }
 
-.miniCardB.isBlack {
+.bigCardB.isBlack {
   color: rgba(15, 23, 42, 0.95);
 }
 
-.miniCornerTL,
-.miniCornerBR {
+.bigCornerTL,
+.bigCornerBR {
   position: absolute;
   display: grid;
   gap: 0px;
@@ -373,93 +403,93 @@ input {
   font-weight: 1000;
 }
 
-.miniCornerTL {
-  left: 6px;
-  top: 6px;
+.bigCornerTL {
+  left: 8px;
+  top: 8px;
 }
 
-.miniCornerBR {
-  right: 6px;
-  bottom: 6px;
+.bigCornerBR {
+  right: 8px;
+  bottom: 8px;
   transform: rotate(180deg);
 }
 
-.miniRank {
-  font-size: 12px;
+.bigRank {
+  font-size: 16px;
   letter-spacing: 0.02em;
 }
 
-.miniSuit {
-  font-size: 12px;
+.bigSuit {
+  font-size: 14px;
   margin-top: -2px;
 }
 
-.miniSuitCenter {
+.bigSuitCenter {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 22px;
+  font-size: 34px;
   opacity: 0.18;
   font-weight: 900;
 }
 
-.miniBackB {
-  width: 48px;
-  height: 48px;
-  border-radius: 12px;
+.bigBackB {
+  width: 108px;
+  height: 78px;
+  border-radius: 16px;
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(2, 6, 23, 0.35));
   border: 1px solid rgba(34, 197, 94, 0.2);
   color: rgba(226, 232, 240, 0.95);
   display: grid;
   place-items: center;
   text-align: center;
-  padding: 6px;
+  padding: 8px;
 }
 
-.miniBackTop {
+.bigBackTop {
   font-weight: 1000;
-  font-size: 12px;
+  font-size: 14px;
   letter-spacing: 0.08em;
   opacity: 0.95;
 }
 
-.miniBackMid {
+.bigBackMid {
   font-weight: 900;
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.12em;
   opacity: 0.8;
   margin-top: 2px;
 }
 
-/* DRAW TEXT */
-
-.drawTextB {
+.drawRightB {
   min-width: 0;
-  text-align: left;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
 }
 
 .drawTitleB {
   font-weight: 1000;
-  letter-spacing: 0.06em;
-  font-size: 16px;
-  line-height: 1.05;
+  letter-spacing: 0.12em;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .drawSubB {
   font-size: 12px;
-  opacity: 0.8;
-  margin-top: 4px;
+  opacity: 0.85;
   font-weight: 800;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
 }
 
-.drawMetaB {
-  display: grid;
-  justify-items: end;
-  gap: 6px;
+.drawMetaRowB {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .metaPillB {
@@ -472,6 +502,10 @@ input {
   opacity: 0.95;
   white-space: nowrap;
 }
+
+/* =========================
+   STATS
+========================= */
 
 .statsMiniB {
   display: grid;
@@ -543,4 +577,12 @@ input {
   .bottomBarB {
     grid-template-columns: 1fr;
   }
-        }
+
+  .drawComboB {
+    grid-template-columns: 1fr; /* stack on tiny screens */
+  }
+
+  .drawRightB {
+    justify-items: start;
+  }
+  }

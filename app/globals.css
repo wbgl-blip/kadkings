@@ -192,7 +192,7 @@ input {
 }
 
 .btnDangerB {
-  background: linear-gradient(180deg, rgba(248, 113, 113, 0.30), rgba(248, 113, 113, 0.14));
+  background: linear-gradient(180deg, rgba(248, 113, 113, 0.3), rgba(248, 113, 113, 0.14));
   border-color: rgba(248, 113, 113, 0.25);
 }
 
@@ -315,7 +315,8 @@ input {
 }
 
 /* =========================
-   CARD-FIRST DRAW CONTROL
+   DRAW CONTROL (same area size)
+   - ONLY enlarge card inside
 ========================= */
 
 .drawComboB {
@@ -324,14 +325,18 @@ input {
   border-radius: 18px;
   padding: 12px;
   display: grid;
-  grid-template-columns: 1.25fr 0.95fr; /* CARD side bigger */
+  grid-template-columns: 1.25fr 0.95fr;
   gap: 12px;
   align-items: center;
   color: rgba(226, 232, 240, 0.95);
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.18), rgba(2, 6, 23, 0.35));
   border: 1px solid rgba(34, 197, 94, 0.22);
   cursor: pointer;
+
+  /* KEEP AREA SAME */
   min-height: 96px;
+  overflow: hidden;
+  position: relative;
 }
 
 .drawComboB:active {
@@ -343,43 +348,57 @@ input {
   min-height: 84px;
   display: grid;
   align-items: center;
+
+  /* allow card to "pop" bigger without resizing row */
+  overflow: visible;
 }
 
+/* stack behind the card */
 .cardStackB {
   position: absolute;
-  width: 92px;
-  height: 72px;
-  left: 8px;
-  top: 8px;
-  border-radius: 14px;
+  width: 120px;
+  height: 84px;
+  left: 0px;
+  top: 4px;
+  border-radius: 16px;
   background: rgba(2, 6, 23, 0.22);
   border: 1px solid rgba(148, 163, 184, 0.14);
   transform: rotate(-2deg);
-  filter: blur(0.0px);
-  opacity: 0.85;
+  opacity: 0.75;
 }
 
 .cardStackB.stack2 {
-  left: 12px;
-  top: 12px;
+  left: 6px;
+  top: 8px;
   transform: rotate(1deg);
-  opacity: 0.65;
+  opacity: 0.55;
 }
 
+/* this wrapper is what we enlarge */
 .bigCardShellB {
   position: relative;
-  margin-left: 18px;
-  width: 108px;
-  height: 78px;
-  border-radius: 16px;
+
+  /* BIGGER like your pic 3 */
+  width: 170px;
+  height: 108px;
+
+  border-radius: 20px;
   display: grid;
   place-items: center;
+
+  /* pull it up/left a bit like the screenshot */
+  margin-left: -6px;
+  margin-top: -8px;
+
+  /* scale without changing layout sizing */
+  transform: translateZ(0);
 }
 
+/* face card */
 .bigCardB {
-  width: 108px;
-  height: 78px;
-  border-radius: 16px;
+  width: 170px;
+  height: 108px;
+  border-radius: 20px;
   background: rgba(248, 250, 252, 0.96);
   border: 1px solid rgba(2, 6, 23, 0.18);
   position: relative;
@@ -404,24 +423,24 @@ input {
 }
 
 .bigCornerTL {
-  left: 8px;
-  top: 8px;
+  left: 12px;
+  top: 12px;
 }
 
 .bigCornerBR {
-  right: 8px;
-  bottom: 8px;
+  right: 12px;
+  bottom: 12px;
   transform: rotate(180deg);
 }
 
 .bigRank {
-  font-size: 16px;
+  font-size: 22px;
   letter-spacing: 0.02em;
 }
 
 .bigSuit {
-  font-size: 14px;
-  margin-top: -2px;
+  font-size: 18px;
+  margin-top: -4px;
 }
 
 .bigSuitCenter {
@@ -429,37 +448,38 @@ input {
   inset: 0;
   display: grid;
   place-items: center;
-  font-size: 34px;
+  font-size: 56px;
   opacity: 0.18;
   font-weight: 900;
 }
 
+/* back card (when no currentCard) */
 .bigBackB {
-  width: 108px;
-  height: 78px;
-  border-radius: 16px;
+  width: 170px;
+  height: 108px;
+  border-radius: 20px;
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(2, 6, 23, 0.35));
   border: 1px solid rgba(34, 197, 94, 0.2);
   color: rgba(226, 232, 240, 0.95);
   display: grid;
   place-items: center;
   text-align: center;
-  padding: 8px;
+  padding: 10px;
 }
 
 .bigBackTop {
   font-weight: 1000;
-  font-size: 14px;
+  font-size: 18px;
   letter-spacing: 0.08em;
   opacity: 0.95;
 }
 
 .bigBackMid {
   font-weight: 900;
-  font-size: 11px;
-  letter-spacing: 0.12em;
+  font-size: 12px;
+  letter-spacing: 0.14em;
   opacity: 0.8;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .drawRightB {
@@ -467,6 +487,7 @@ input {
   display: grid;
   gap: 8px;
   justify-items: start;
+  align-content: center;
 }
 
 .drawTitleB {
@@ -573,16 +594,9 @@ input {
   white-space: nowrap;
 }
 
+/* keep one-column on tiny screens */
 @media (max-width: 420px) {
   .bottomBarB {
     grid-template-columns: 1fr;
   }
-
-  .drawComboB {
-    grid-template-columns: 1fr; /* stack on tiny screens */
-  }
-
-  .drawRightB {
-    justify-items: start;
-  }
-  }
+}

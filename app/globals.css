@@ -78,6 +78,27 @@ input {
   line-height: 1.2;
 }
 
+.topRightB {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fsBtnB {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.55);
+  color: rgba(226, 232, 240, 0.95);
+  font-weight: 900;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.fsBtnB:active {
+  transform: translateY(1px);
+}
+
 .statusB {
   display: inline-flex;
   align-items: center;
@@ -323,9 +344,7 @@ input {
   overflow: hidden;
 }
 
-/* =========================
-   MINI CARD (FIXED)
-========================= */
+/* MINI CARD */
 
 .miniCardB {
   width: 48px;
@@ -385,13 +404,12 @@ input {
   font-weight: 900;
 }
 
-/* Card back when no card yet */
 .miniBackB {
   width: 48px;
   height: 48px;
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(2, 6, 23, 0.35));
-  border: 1px solid rgba(34, 197, 94, 0.20);
+  border: 1px solid rgba(34, 197, 94, 0.2);
   color: rgba(226, 232, 240, 0.95);
   display: grid;
   place-items: center;
@@ -414,7 +432,7 @@ input {
   margin-top: 2px;
 }
 
-/* ========================= */
+/* DRAW TEXT */
 
 .drawTextB {
   min-width: 0;
@@ -503,7 +521,7 @@ input {
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.10);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
 .pRowB:last-child {
@@ -525,4 +543,4 @@ input {
   .bottomBarB {
     grid-template-columns: 1fr;
   }
-}
+        }

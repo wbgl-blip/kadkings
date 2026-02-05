@@ -74,6 +74,25 @@ function computeVideoLayout(count: number): Layout {
   return "l6";
 }
 
+function parseCard(card: string | null) {
+  if (!card) return { rank: "", suit: "", isRed: false, ok: false };
+
+  // Card format is like: "10♥" or "9♣" or "A♠"
+  const suit = card.slice(-1);
+  const rank = card.slice(0, -1);
+  const isRed = suit === "♥" || suit === "♦";
+
+  const ok =
+    (rank === "A" ||
+      rank === "J" ||
+      rank === "Q" ||
+      rank === "K" ||
+      ["2", "3", "4", "5", "6", "7", "8", "9", "10"].includes(rank)) &&
+    ["♠", "♥", "♦", "♣"].includes(suit);
+
+  return { rank, suit, isRed, ok };
+}
+
 /* =========================
    MAIN APP
 ========================= */
@@ -412,6 +431,9 @@ export default function Page() {
   const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
   const layout = computeVideoLayout(effectiveCount);
 
+  const card = parseCard(state.currentCard);
+  const cardColorClass = card.isRed ? "isRed" : "isBlack";
+
   return (
     <div className="appB">
       <div className="topbarB">
@@ -488,9 +510,24 @@ export default function Page() {
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw}>
                 <div className="cardSquareB">
-                  <div className="miniCardB">
-                    <div className="miniCornerB">{state.currentCard || "—"}</div>
-                  </div>
+                  {card.ok ? (
+                    <div className={`miniCardB ${cardColorClass}`}>
+                      <div className="miniCornerTL">
+                        <span className="miniRank">{card.rank}</span>
+                        <span className="miniSuit">{card.suit}</span>
+                      </div>
+                      <div className="miniSuitCenter">{card.suit}</div>
+                      <div className="miniCornerBR">
+                        <span className="miniRank">{card.rank}</span>
+                        <span className="miniSuit">{card.suit}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="miniBackB">
+                      <div className="miniBackTop">KAD</div>
+                      <div className="miniBackMid">KINGS</div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="drawTextB">
@@ -541,4 +578,4 @@ export default function Page() {
       )}
     </div>
   );
-}
+}      

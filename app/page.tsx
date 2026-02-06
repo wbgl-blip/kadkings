@@ -63,33 +63,40 @@ function decode(buf: Uint8Array) {
   }
 }
 
-type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
-
-function computeVideoLayout(count: number): Layout {
-  if (count <= 1) return "l1";
-  if (count === 2) return "l2";
-  if (count === 3) return "l3";
-  if (count === 4) return "l4";
-  if (count === 5) return "l5";
-  return "l6";
+function isEmptySlot(id: string) {
+  return id.startsWith("__empty__");
 }
 
-function parseCard(card: string | null) {
-  if (!card) return { rank: "", suit: "", isRed: false, ok: false };
-
+function parseCard(card: string | null): { rank: string; suit: string } {
+  if (!card) return { rank: "—", suit: "" };
+  // card is like "10♥" or "A♠"
   const suit = card.slice(-1);
-  const rank = card.slice(0, -1);
-  const isRed = suit === "♥" || suit === "♦";
+  const rank = card.slice(0, -1) || "—";
+  return { rank, suit };
+}
 
-  const ok =
-    (rank === "A" ||
-      rank === "J" ||
-      rank === "Q" ||
-      rank === "K" ||
-      ["2", "3", "4", "5", "6", "7", "8", "9", "10"].includes(rank)) &&
-    ["♠", "♥", "♦", "♣"].includes(suit);
+/* =========================
+   FULLSCREEN
+========================= */
 
-  return { rank, suit, isRed, ok };
+async function enterFullscreen() {
+  const el = document.documentElement;
+  // @ts-ignore
+  if (el.requestFullscreen) return el.requestFullscreen();
+  // @ts-ignore
+  if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+}
+
+async function exitFullscreen() {
+  // @ts-ignore
+  if (document.exitFullscreen) return document.exitFullscreen();
+  // @ts-ignore
+  if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+}
+
+function isFullscreenNow() {
+  // @ts-ignore
+  return Boolean(document.fullscreenElement || document.webkitFullscreenElement);
 }
 
 /* =========================
@@ -109,7 +116,7 @@ export default function Page() {
   });
 
   const [roomCode, setRoomCode] = useState("kad");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(""); // ✅ start blank
 
   const [connected, setConnected] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -128,24 +135,23 @@ export default function Page() {
     stateRef.current = state;
   }, [state]);
 
-  /* =========================
-     FULLSCREEN
-  ========================= */
-
   useEffect(() => {
-    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
+    const onFs = () => setIsFullscreen(isFullscreenNow());
     onFs();
     document.addEventListener("fullscreenchange", onFs);
-    return () => document.removeEventListener("fullscreenchange", onFs);
+    // @ts-ignore
+    document.addEventListener("webkitfullscreenchange", onFs);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFs);
+      // @ts-ignore
+      document.removeEventListener("webkitfullscreenchange", onFs);
+    };
   }, []);
 
   async function toggleFullscreen() {
     try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await document.documentElement.requestFullscreen();
-      }
+      if (isFullscreenNow()) await exitFullscreen();
+      else await enterFullscreen();
     } catch {
       // ignore
     }
@@ -161,9 +167,11 @@ export default function Page() {
 
     let el = root.querySelector(`[data-id="${CSS.escape(id)}"]`) as HTMLDivElement | null;
 
+    const empty = isEmptySlot(id);
+
     if (!el) {
       el = document.createElement("div");
-      el.className = "vTile";
+      el.className = empty ? "vTile vEmpty" : "vTile";
       el.dataset.id = id;
 
       const v = document.createElement("video");
@@ -173,10 +181,24 @@ export default function Page() {
 
       const tag = document.createElement("div");
       tag.className = "vTag";
-      tag.innerText = id;
+      tag.innerText = empty ? "Empty" : id;
 
-      el.append(v, tag);
+      const center = document.createElement("div");
+      center.className = "vCenter";
+      center.innerText = empty ? "+" : "";
+
+      el.append(v, tag, center);
       root.append(el);
+    } else {
+      // keep class/tag up to date if tile changes role
+      if (empty) el.classList.add("vEmpty");
+      else el.classList.remove("vEmpty");
+
+      const tag = el.querySelector(".vTag") as HTMLDivElement | null;
+      if (tag) tag.innerText = empty ? "Empty" : id;
+
+      const center = el.querySelector(".vCenter") as HTMLDivElement | null;
+      if (center) center.innerText = empty ? "+" : "";
     }
 
     return el;
@@ -199,10 +221,22 @@ export default function Page() {
       if (id) map.set(id, el as HTMLElement);
     });
 
+    // Ensure every tile exists, then append in order
     for (const id of order) {
-      const el = map.get(id);
-      if (el) root.appendChild(el);
+      const existing = map.get(id);
+      if (existing) {
+        root.appendChild(existing);
+      } else {
+        const created = ensureTile(id);
+        if (created) root.appendChild(created);
+      }
     }
+
+    // Remove any stray tiles not in order (cleanup)
+    Array.from(root.querySelectorAll(".vTile")).forEach((el) => {
+      const id = (el as HTMLElement).dataset.id || "";
+      if (!order.includes(id)) el.remove();
+    });
   }
 
   async function attachLocalTracks(room: Room) {
@@ -232,7 +266,9 @@ export default function Page() {
   ========================= */
 
   function ensurePlayer(gs: GameState, id: string) {
-    if (!gs.players[id]) gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
+    if (!gs.players[id]) {
+      gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
+    }
   }
 
   async function draw() {
@@ -270,7 +306,12 @@ export default function Page() {
     next.players[me.current].drinks = Math.max(0, next.players[me.current].drinks + n);
 
     setState(next);
-    await send({ type: "UPDATE", id: me.current, patch: { drinks: next.players[me.current].drinks } });
+
+    await send({
+      type: "UPDATE",
+      id: me.current,
+      patch: { drinks: next.players[me.current].drinks },
+    });
   }
 
   /* =========================
@@ -303,8 +344,6 @@ export default function Page() {
       roomRef.current = room;
       me.current = identity;
 
-      ensureTile(identity);
-
       room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
         setState((s) => {
           const n = clone(s);
@@ -314,7 +353,9 @@ export default function Page() {
 
         const tile = ensureTile(participant.identity);
         if (!tile) return;
-        if (track.kind === Track.Kind.Video) track.attach(tile.querySelector("video")!);
+        if (track.kind === Track.Kind.Video) {
+          track.attach(tile.querySelector("video")!);
+        }
       });
 
       room.on(RoomEvent.ParticipantConnected, (participant) => {
@@ -346,7 +387,9 @@ export default function Page() {
 
         if (msg.type === "DRAW") {
           const current = stateRef.current;
-          if (roomRef.current && me.current && current.host === me.current) draw();
+          if (roomRef.current && me.current && current.host === me.current) {
+            draw();
+          }
           return;
         }
 
@@ -360,11 +403,15 @@ export default function Page() {
         }
       });
 
-      room.on(RoomEvent.Disconnected, () => setConnected(false));
+      room.on(RoomEvent.Disconnected, () => {
+        setConnected(false);
+      });
 
       await room.connect(data.url, data.token);
+
       setConnected(true);
 
+      // init state
       const current = stateRef.current;
       const next = clone(current);
       ensurePlayer(next, identity);
@@ -377,6 +424,7 @@ export default function Page() {
       setState(next);
       await send({ type: "STATE", data: next });
 
+      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
@@ -410,12 +458,18 @@ export default function Page() {
 
     if (videoRef.current) videoRef.current.innerHTML = "";
 
-    setState({ host: null, deck: [], currentCard: null, players: {} });
+    setState({
+      host: null,
+      deck: [],
+      currentCard: null,
+      players: {},
+    });
+
     setConnected(false);
   }
 
   /* =========================
-     UI / ORDERING / LAYOUT
+     UI / ORDERING / FIXED 6 GRID
   ========================= */
 
   const orderedPlayers = useMemo(() => {
@@ -426,38 +480,36 @@ export default function Page() {
     return [...mine, ...others].slice(0, 6);
   }, [state.players]);
 
+  // ✅ Always render 6 slots (3x2), fill empty spots with placeholders
+  const slots = useMemo(() => {
+    const filled = orderedPlayers.slice(0, 6);
+    const emptiesNeeded = Math.max(0, 6 - filled.length);
+    const empties = Array.from({ length: emptiesNeeded }, (_, i) => `__empty__${i + 1}`);
+    return [...filled, ...empties];
+  }, [orderedPlayers]);
+
+  // Keep tiles ordered + ensure placeholders exist (prevents giant single tile)
   useEffect(() => {
     if (!connected) return;
-    reorderTiles(orderedPlayers);
+    reorderTiles(slots);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, orderedPlayers.join("|")]);
+  }, [connected, slots.join("|")]);
 
-  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
-  const layout = computeVideoLayout(effectiveCount);
-
-  const card = parseCard(state.currentCard);
-  const cardColorClass = card.isRed ? "isRed" : "isBlack";
+  const { rank, suit } = parseCard(state.currentCard);
 
   return (
     <div className="appB">
+      {/* HEADER (minimal) */}
       <div className="topbarB">
         <div className="brandB">
           <div className="logoB">KAD</div>
-          <div style={{ minWidth: 0 }}>
-            <div className="titleB">KAD Kings</div>
-            <div className="subB">Players always visible · one-screen</div>
-          </div>
+          <div className="titleB">KAD Kings</div>
         </div>
 
-        <div className="topRightB">
-          <button className="fsBtnB" onClick={toggleFullscreen} type="button">
+        <div className="topActionsB">
+          <button className="btnB btnTinyB btnGhostB" onClick={toggleFullscreen} type="button">
             {isFullscreen ? "Exit" : "Fullscreen"}
           </button>
-
-          <div className="statusB">
-            <span className="dotB" style={{ background: connected ? "rgba(34,197,94,0.9)" : "rgba(148,163,184,0.9)" }} />
-            {connected ? "Connected" : "Not connected"}
-          </div>
         </div>
       </div>
 
@@ -465,12 +517,26 @@ export default function Page() {
         <div className="cardB joinCardB">
           <div className="fieldB">
             <div>Room</div>
-            <input value={roomCode} onChange={(e) => setRoomCode(e.target.value)} placeholder="kad" />
+            <input
+              value={roomCode}
+              onChange={(e) => setRoomCode(e.target.value)}
+              placeholder="kad"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+            />
           </div>
 
           <div className="fieldB">
             <div>Name</div>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ty" />
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Your name"
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+            />
           </div>
 
           <div className="rowB">
@@ -480,20 +546,19 @@ export default function Page() {
           </div>
 
           {errMsg ? (
-            <div className="noteB" style={{ color: "rgba(248,113,113,0.95)", fontWeight: 900 }}>
-              {errMsg}
-            </div>
+            <div className="noteB noteErrB">{errMsg}</div>
           ) : (
             <div className="noteB">If Join does nothing, the error will show here.</div>
           )}
         </div>
       ) : (
         <div className="shellB">
+          {/* MAIN: PLAYERS (fixed 3x2) */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
               <div className="rowB" style={{ justifyContent: "flex-end" }}>
-                <div className="statusB" style={{ padding: "8px 10px" }}>
+                <div className="pillB">
                   Host: <b style={{ marginLeft: 6 }}>{state.host || "—"}</b>
                 </div>
                 <button className="btnB btnDangerB btnTinyB" onClick={disconnect} type="button">
@@ -502,60 +567,48 @@ export default function Page() {
               </div>
             </div>
 
-            {errMsg ? (
-              <div className="noteB" style={{ color: "rgba(248,113,113,0.95)", fontWeight: 900 }}>
-                {errMsg}
-              </div>
-            ) : null}
+            {errMsg ? <div className="noteB noteErrB">{errMsg}</div> : null}
 
-            <div ref={videoRef} className="videoGridB" data-layout={layout} />
+            <div
+              ref={videoRef}
+              className="videoGridB"
+              data-layout="l6" // ✅ force 3x2 always when connected
+            />
           </div>
 
+          {/* BOTTOM */}
           <div className="bottomBarB">
-            {/* CARD-FIRST DRAW AREA */}
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw} type="button">
-                <div className="drawLeftB">
-                  <div className="cardStackB" aria-hidden="true" />
-                  <div className="cardStackB stack2" aria-hidden="true" />
+                {/* ✅ Larger card, same overall area */}
+                <div className="cardHeroB">
+                  <div className="cardFaceB">
+                    <div className="cardTLB">
+                      <div className="cardRankB">{rank}</div>
+                      <div className="cardSuitB">{suit}</div>
+                    </div>
 
-                  <div className="bigCardShellB">
-                    {card.ok ? (
-                      <div className={`bigCardB ${cardColorClass}`}>
-                        <div className="bigCornerTL">
-                          <span className="bigRank">{card.rank}</span>
-                          <span className="bigSuit">{card.suit}</span>
-                        </div>
+                    <div className="cardCenterB">{suit}</div>
 
-                        <div className="bigSuitCenter">{card.suit}</div>
-
-                        <div className="bigCornerBR">
-                          <span className="bigRank">{card.rank}</span>
-                          <span className="bigSuit">{card.suit}</span>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="bigBackB">
-                        <div className="bigBackTop">KAD</div>
-                        <div className="bigBackMid">KINGS</div>
-                      </div>
-                    )}
+                    <div className="cardBRB">
+                      <div className="cardRankB">{rank}</div>
+                      <div className="cardSuitB">{suit}</div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="drawRightB">
+                <div className="drawTextB">
                   <div className="drawTitleB">DRAW</div>
                   <div className="drawSubB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
+                </div>
 
-                  <div className="drawMetaRowB">
-                    <div className="metaPillB">Remaining: {state.deck.length}</div>
-                    <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
-                  </div>
+                <div className="drawMetaB">
+                  <div className="metaPillB">🃏 {state.deck.length}</div>
+                  <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
                 </div>
               </button>
             </div>
 
-            {/* STATS */}
             <div className="cardB statsMiniB">
               <div className="yourDrinksRowB">
                 <div>
@@ -592,4 +645,4 @@ export default function Page() {
       )}
     </div>
   );
-    }
+      }

@@ -57,6 +57,12 @@ type GameState = {
 
 type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
 
+type PickMode =
+  | null
+  | { kind: "MATE"; by: string } // 8
+  | { kind: "QM"; by: string } // Q gotcha
+  | { kind: "TWO"; by: string }; // 2 pick someone to drink
+
 type Msg =
   | { type: "STATE"; data: GameState }
   | { type: "DRAW" }
@@ -162,9 +168,8 @@ export default function Page() {
   const [joining, setJoining] = useState(false);
   const [errMsg, setErrMsg] = useState<string>("");
 
-  const [pickMode, setPickMode] = useState<null | { kind: "MATE" | "QM"; by: string }>(null);
+  const [pickMode, setPickMode] = useState<PickMode>(null);
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const [state, setState] = useState<GameState>({
     host: null,
@@ -182,26 +187,6 @@ export default function Page() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-
-  /* =========================
-     FULLSCREEN
-  ========================= */
-
-  useEffect(() => {
-    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
-    onFs();
-    document.addEventListener("fullscreenchange", onFs);
-    return () => document.removeEventListener("fullscreenchange", onFs);
-  }, []);
-
-  async function toggleFullscreen() {
-    try {
-      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
-      else await document.exitFullscreen();
-    } catch (e: any) {
-      setErrMsg(`Fullscreen failed: ${e?.message || e}`);
-    }
-  }
 
   /* =========================
      VIDEO HANDLING
@@ -402,13 +387,17 @@ export default function Page() {
       next.powers.questionMaster = me.current;
     } else if (r === "K") {
       next.powers.ruleMaster = me.current;
-      // open rules modal locally for the drawer
       setRulesOpen(true);
     } else if (r === "8") {
       setPickMode({ kind: "MATE", by: me.current });
+    } else if (r === "2") {
+      // ✅ 2 = host taps a tile to pick someone to drink (+1)
+      setPickMode({ kind: "TWO", by: me.current });
     } else if (r === "3") {
+      // 3 = drawer drinks (+1)
       applyDrinkWithMates(next, me.current, 1);
     } else if (r === "6") {
+      // 6 = everyone drinks (+1)
       for (const id of Object.keys(next.players)) {
         ensurePlayer(next, id);
         next.players[id].drinks = Math.max(0, next.players[id].drinks + 1);
@@ -452,14 +441,29 @@ export default function Page() {
     const cur = stateRef.current;
     if (!pickMode) return;
 
+    // ✅ Mate selection (8)
     if (pickMode.kind === "MATE") {
       await send({ type: "SET_MATE_REQ", by: pickMode.by, to: targetId });
       setPickMode(null);
       return;
     }
 
+    // ✅ QM gotcha (Q)
     if (pickMode.kind === "QM") {
       await send({ type: "QM_GOTCHA_REQ", by: pickMode.by, target: targetId });
+      setPickMode(null);
+      return;
+    }
+
+    // ✅ 2 selection: target drinks (+1)
+    if (pickMode.kind === "TWO") {
+      await send({
+        type: "DRINK_REQ",
+        by: pickMode.by,
+        target: targetId,
+        delta: 1,
+        reason: "2_pick",
+      });
       setPickMode(null);
       return;
     }
@@ -471,7 +475,6 @@ export default function Page() {
     if (!me.current) return;
     if (!cur.host) return;
 
-    // Only the current rule master should add rules (keeps it clean)
     if (cur.powers.ruleMaster !== me.current) return;
 
     await send({ type: "RULE_ADD_REQ", by: me.current, name: ruleName });
@@ -484,12 +487,26 @@ export default function Page() {
     if (!me.current) return;
     if (!cur.host) return;
 
-    // Only host OR rule master can clear
     const allowed = cur.host === me.current || cur.powers.ruleMaster === me.current;
     if (!allowed) return;
 
     await send({ type: "RULE_CLEAR_REQ", by: me.current, ruleId });
   }
+
+  /* =========================
+     AUTO-CLEAR STUCK PICK MODE
+     (prevents the "mate" prompt while showing a 2, etc.)
+  ========================= */
+
+  useEffect(() => {
+    if (!pickMode) return;
+    const r = rankOf(state.currentCard);
+
+    if (pickMode.kind === "MATE" && r !== "8") setPickMode(null);
+    if (pickMode.kind === "TWO" && r !== "2") setPickMode(null);
+    if (pickMode.kind === "QM" && state.powers.questionMaster !== me.current) setPickMode(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.currentCard, state.powers.questionMaster]);
 
   /* =========================
      CONNECT / DISCONNECT
@@ -830,6 +847,8 @@ export default function Page() {
       ? "Tap a player tile to add as your mate (one-way)"
       : pickMode?.kind === "QM"
       ? "Tap the player who answered (GOTCHA)"
+      : pickMode?.kind === "TWO"
+      ? "Tap a player tile to make them drink (+1)"
       : "";
 
   /* =========================
@@ -842,12 +861,6 @@ export default function Page() {
         <div className="brandB">
           <div className="logoB">KAD</div>
           <div className="titleOnlyB">KAD-KINGS</div>
-        </div>
-
-        <div className="topActionsB">
-          <button className="iconBtnB" onClick={toggleFullscreen} title="Fullscreen">
-            ⤢
-          </button>
         </div>
       </div>
 
@@ -885,7 +898,15 @@ export default function Page() {
             </div>
 
             {errMsg ? <div className="noteB errB">{errMsg}</div> : null}
-            {pickMode ? <div className="pickHintB">{pickHint}</div> : null}
+
+            {pickMode ? (
+              <div className="pickHintRowB">
+                <div className="pickHintB">{pickHint}</div>
+                <button className="pickCancelB" onClick={() => setPickMode(null)}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
 
             <div
               ref={videoRef}
@@ -897,7 +918,10 @@ export default function Page() {
                 if (!target) return;
                 const id = target.dataset.id || "";
                 if (!id) return;
+
+                // don’t allow self-select for mate
                 if (pickMode.kind === "MATE" && id === pickMode.by) return;
+
                 onPickTarget(id);
               }}
             />
@@ -971,7 +995,7 @@ export default function Page() {
                     {state.activeRules.map((rule) => (
                       <div key={rule.id} className="ruleRowB">
                         <div className="ruleTextB">{rule.name}</div>
-                        {(state.powers.ruleMaster === me.current || state.host === me.current) ? (
+                        {state.powers.ruleMaster === me.current || state.host === me.current ? (
                           <button className="ruleXBtnB" onClick={() => clearRule(rule.id)} title="Remove rule">
                             ×
                           </button>
@@ -1045,4 +1069,4 @@ export default function Page() {
       )}
     </div>
   );
-         }
+  }

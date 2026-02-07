@@ -14,65 +14,17 @@ type PlayerStats = {
   cardsDrawn: number;
 };
 
-type PowerType = "HEAVEN" | "THUMB";
-
-type ActiveCall = {
-  id: string;
-  type: PowerType;
-  by: string;
-  endsAt: number; // ms epoch
-  taps: Record<string, number>; // id -> tapTime(ms epoch)
-};
-
-type ActiveRule = {
-  id: string;
-  name: string;
-  by: string;
-  createdAt: number;
-};
-
 type GameState = {
   host: string | null;
   deck: string[];
   currentCard: string | null;
   players: Record<string, PlayerStats>;
-
-  powers: {
-    heavenHolder: string | null; // 7
-    thumbHolder: string | null; // J
-    questionMaster: string | null; // Q
-    ruleMaster: string | null; // K
-  };
-
-  cooldowns: {
-    heavenReadyAt: number;
-    thumbReadyAt: number;
-  };
-
-  activeCall: ActiveCall | null;
-
-  matesOut: Record<string, string[]>; // from -> [to...]
-  activeRules: ActiveRule[];
 };
-
-type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
-
-type PickMode =
-  | null
-  | { kind: "MATE"; by: string } // 8
-  | { kind: "QM"; by: string } // Q gotcha
-  | { kind: "TWO"; by: string }; // 2 pick someone to drink
 
 type Msg =
   | { type: "STATE"; data: GameState }
   | { type: "DRAW" }
-  | { type: "DRINK_REQ"; by: string; target: string; delta: number; reason: string }
-  | { type: "SET_MATE_REQ"; by: string; to: string }
-  | { type: "CALL_START_REQ"; callType: PowerType; by: string }
-  | { type: "CALL_TAP"; callId: string; by: string; t: number }
-  | { type: "QM_GOTCHA_REQ"; by: string; target: string }
-  | { type: "RULE_ADD_REQ"; by: string; name: string }
-  | { type: "RULE_CLEAR_REQ"; by: string; ruleId: string };
+  | { type: "UPDATE"; id: string; patch: Partial<PlayerStats> };
 
 /* =========================
    HELPERS
@@ -111,12 +63,7 @@ function decode(buf: Uint8Array) {
   }
 }
 
-function rankOf(card: string | null): string | null {
-  if (!card) return null;
-  const suit = card.slice(-1);
-  const r = card.slice(0, card.length - suit.length);
-  return r || null;
-}
+type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
 
 function computeVideoLayout(count: number): Layout {
   if (count <= 1) return "l1";
@@ -127,67 +74,6 @@ function computeVideoLayout(count: number): Layout {
   return "l6";
 }
 
-function nowMs() {
-  return Date.now();
-}
-
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
-
-/* =========================
-   RULE PRESETS (NO TYPING)
-========================= */
-
-const RULE_PRESETS: { label: string; value: string }[] = [
-  { label: "No swearing 🤐", value: "No swearing 🤐" },
-  { label: "Drink with left hand ✋", value: "Drink with left hand ✋" },
-  { label: "No saying 'drink' 🚫🍺", value: "No saying 'drink' 🚫🍺" },
-  { label: "No phones 📵", value: "No phones 📵" },
-  { label: "Anyone says 'Kyle' = +1 🍺", value: "Anyone says 'Kyle' = +1 🍺" },
-  { label: "Everyone cheers before drinking 🥂", value: "Everyone cheers before drinking 🥂" },
-  { label: "No first names only nicknames 😈", value: "No first names only nicknames 😈" },
-  { label: "Last to laugh drinks 😂", value: "Last to laugh drinks 😂" },
-];
-
-/* =========================
-   CARD RULE TEXT
-========================= */
-
-function ruleTextForRank(r: string | null) {
-  if (!r) return "Draw to start";
-  switch (r) {
-    case "A":
-      return "A = Waterfall (drawer starts when ready)";
-    case "2":
-      return "2 = Pick someone to drink (+1)";
-    case "3":
-      return "3 = Drawer drinks (+1)";
-    case "4":
-      return "4 = Whores (girls drink)";
-    case "5":
-      return "5 = Guys drink";
-    case "6":
-      return "6 = Dicks (everyone drinks +1)";
-    case "7":
-      return "7 = Heaven (power • last to tap drinks)";
-    case "8":
-      return "8 = Mate (one-way chain)";
-    case "9":
-      return "9 = Rhyme (vote loser drinks)";
-    case "10":
-      return "10 = Categories (vote loser drinks)";
-    case "J":
-      return "J = Thumbmaster (power • last to tap drinks)";
-    case "Q":
-      return "Q = Question Master (gotcha)";
-    case "K":
-      return "K = Make a rule (stays active)";
-    default:
-      return `${r} = (custom)`;
-  }
-}
-
 /* =========================
    MAIN APP
 ========================= */
@@ -196,40 +82,60 @@ export default function Page() {
   const roomRef = useRef<Room | null>(null);
   const me = useRef<string>("");
   const videoRef = useRef<HTMLDivElement>(null);
-  const callTimerRef = useRef<number | null>(null);
+
+  const stateRef = useRef<GameState>({
+    host: null,
+    deck: [],
+    currentCard: null,
+    players: {},
+  });
 
   const [roomCode, setRoomCode] = useState("kad");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(""); // ✅ start blank
 
   const [connected, setConnected] = useState(false);
   const [joining, setJoining] = useState(false);
   const [errMsg, setErrMsg] = useState<string>("");
-
-  const [pickMode, setPickMode] = useState<PickMode>(null);
-  const [rulesOpen, setRulesOpen] = useState(false);
 
   const [state, setState] = useState<GameState>({
     host: null,
     deck: [],
     currentCard: null,
     players: {},
-    powers: { heavenHolder: null, thumbHolder: null, questionMaster: null, ruleMaster: null },
-    cooldowns: { heavenReadyAt: 0, thumbReadyAt: 0 },
-    activeCall: null,
-    matesOut: {},
-    activeRules: [],
   });
 
-  const stateRef = useRef<GameState>(state);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   /* =========================
-     VIDEO HANDLING
+     FULLSCREEN
   ========================= */
 
-  const EMPTY_PREFIX = "__empty__:";
+  const [isFs, setIsFs] = useState(false);
+
+  useEffect(() => {
+    const onFs = () => setIsFs(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    onFs();
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  async function toggleFullscreen() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // some mobile browsers block fullscreen; ignore
+    }
+  }
+
+  /* =========================
+     VIDEO HANDLING
+  ========================= */
 
   function ensureTile(id: string) {
     const root = videoRef.current;
@@ -242,19 +148,6 @@ export default function Page() {
       el.className = "vTile";
       el.dataset.id = id;
 
-      if (id.startsWith(EMPTY_PREFIX)) {
-        el.classList.add("emptyB");
-        const plus = document.createElement("div");
-        plus.className = "vPlus";
-        plus.innerText = "+";
-        const tag = document.createElement("div");
-        tag.className = "vTag";
-        tag.innerText = "Empty";
-        el.append(plus, tag);
-        root.append(el);
-        return el;
-      }
-
       const v = document.createElement("video");
       v.autoplay = true;
       v.playsInline = true;
@@ -264,11 +157,7 @@ export default function Page() {
       tag.className = "vTag";
       tag.innerText = id;
 
-      const meta = document.createElement("div");
-      meta.className = "vMeta";
-      meta.innerText = "";
-
-      el.append(v, tag, meta);
+      el.append(v, tag);
       root.append(el);
     }
 
@@ -276,25 +165,10 @@ export default function Page() {
   }
 
   function removeTile(id: string) {
-    if (id.startsWith(EMPTY_PREFIX)) return;
     const root = videoRef.current;
     if (!root) return;
     const el = root.querySelector(`[data-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
-  }
-
-  function ensureEmptySlots(totalSlots: number, realIds: string[]) {
-    const root = videoRef.current;
-    if (!root) return;
-
-    // Remove old empties beyond desired count
-    const empties = Array.from(root.querySelectorAll(`.vTile[data-id^="${EMPTY_PREFIX}"]`)) as HTMLElement[];
-    for (const e of empties) e.remove();
-
-    const missing = Math.max(0, totalSlots - realIds.length);
-    for (let i = 0; i < missing; i++) {
-      ensureTile(`${EMPTY_PREFIX}${i + 1}`);
-    }
   }
 
   function reorderTiles(order: string[]) {
@@ -307,15 +181,7 @@ export default function Page() {
       if (id) map.set(id, el as HTMLElement);
     });
 
-    // Put real players first
     for (const id of order) {
-      const el = map.get(id);
-      if (el) root.appendChild(el);
-    }
-
-    // Then empties
-    const empties = Array.from(map.keys()).filter((k) => k.startsWith(EMPTY_PREFIX)).sort();
-    for (const id of empties) {
       const el = map.get(id);
       if (el) root.appendChild(el);
     }
@@ -327,7 +193,9 @@ export default function Page() {
       if (!track) return;
       const tile = ensureTile(me.current);
       if (!tile) return;
-      if (track.kind === Track.Kind.Video) track.attach(tile.querySelector("video")!);
+      if (track.kind === Track.Kind.Video) {
+        track.attach(tile.querySelector("video")!);
+      }
     });
   }
 
@@ -341,108 +209,28 @@ export default function Page() {
     await r.localParticipant.publishData(encode(msg), { reliable: true });
   }
 
-  function ensurePlayer(gs: GameState, id: string) {
-    if (!gs.players[id]) gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
-  }
-
-  function addMate(gs: GameState, from: string, to: string) {
-    if (!from || !to || from === to) return;
-    if (!gs.matesOut[from]) gs.matesOut[from] = [];
-    if (!gs.matesOut[from].includes(to)) gs.matesOut[from].push(to);
-  }
-
-  function applyDrinkWithMates(gs: GameState, startId: string, delta: number) {
-    const visited = new Set<string>();
-    const queue: string[] = [];
-
-    const push = (id: string) => {
-      if (!id) return;
-      if (visited.has(id)) return;
-      visited.add(id);
-      queue.push(id);
-    };
-
-    push(startId);
-
-    while (queue.length) {
-      const id = queue.shift()!;
-      ensurePlayer(gs, id);
-      gs.players[id].drinks = Math.max(0, gs.players[id].drinks + delta);
-
-      const outs = gs.matesOut[id] || [];
-      for (const to of outs) push(to);
-    }
-  }
-
-  function scheduleResolveIfHost(next: GameState) {
-    if (!next.activeCall) return;
-    if (next.host !== me.current) return;
-
-    const delay = Math.max(0, next.activeCall.endsAt - nowMs());
-    if (callTimerRef.current) {
-      window.clearTimeout(callTimerRef.current);
-      callTimerRef.current = null;
-    }
-
-    callTimerRef.current = window.setTimeout(() => {
-      const cur = stateRef.current;
-      if (!cur.activeCall) return;
-      if (cur.host !== me.current) return;
-      resolveCallAsHost(cur);
-    }, delay + 25);
-  }
-
-  function resolveCallAsHost(gs: GameState) {
-    const next = clone(gs);
-    const call = next.activeCall;
-    if (!call) return;
-
-    const roster = Object.keys(next.players).filter(Boolean);
-    if (!roster.length) {
-      next.activeCall = null;
-      setState(next);
-      send({ type: "STATE", data: next });
-      return;
-    }
-
-    let loser = roster[0];
-    let worst = -1;
-
-    for (const id of roster) {
-      const t = call.taps[id];
-      const val = typeof t === "number" ? t : Number.POSITIVE_INFINITY;
-      if (val > worst) {
-        worst = val;
-        loser = id;
-      }
-    }
-
-    applyDrinkWithMates(next, loser, 1);
-
-    const readyAt = nowMs() + 15_000;
-    if (call.type === "HEAVEN") next.cooldowns.heavenReadyAt = readyAt;
-    if (call.type === "THUMB") next.cooldowns.thumbReadyAt = readyAt;
-
-    next.activeCall = null;
-
-    setState(next);
-    send({ type: "STATE", data: next });
-  }
-
   /* =========================
-     GAME ACTIONS
+     GAME LOGIC
   ========================= */
 
-  async function draw() {
-    const cur = stateRef.current;
-    if (!roomRef.current) return;
+  function ensurePlayer(gs: GameState, id: string) {
+    if (!gs.players[id]) {
+      gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
+    }
+  }
 
-    if (cur.host !== me.current) {
+  async function draw() {
+    const r = roomRef.current;
+    if (!r) return;
+
+    const current = stateRef.current;
+
+    if (current.host !== me.current) {
       await send({ type: "DRAW" });
       return;
     }
 
-    const next = clone(cur);
+    const next = clone(current);
 
     if (!next.deck.length) next.deck = shuffle(buildDeck());
 
@@ -452,130 +240,25 @@ export default function Page() {
     ensurePlayer(next, me.current);
     next.players[me.current].cardsDrawn++;
 
-    const r = rankOf(card);
-
-    if (r === "7") {
-      next.powers.heavenHolder = me.current;
-    } else if (r === "J") {
-      next.powers.thumbHolder = me.current;
-    } else if (r === "Q") {
-      next.powers.questionMaster = me.current;
-    } else if (r === "K") {
-      next.powers.ruleMaster = me.current;
-      setRulesOpen(true);
-    } else if (r === "8") {
-      setPickMode({ kind: "MATE", by: me.current });
-    } else if (r === "2") {
-      setPickMode({ kind: "TWO", by: me.current });
-    } else if (r === "3") {
-      applyDrinkWithMates(next, me.current, 1);
-    } else if (r === "6") {
-      for (const id of Object.keys(next.players)) {
-        ensurePlayer(next, id);
-        next.players[id].drinks = Math.max(0, next.players[id].drinks + 1);
-      }
-    }
-
     setState(next);
     await send({ type: "STATE", data: next });
   }
 
-  async function requestDrink(delta: number, reason: string) {
-    const cur = stateRef.current;
-    if (!roomRef.current) return;
-    if (!me.current) return;
-    if (!cur.host) return;
-    await send({ type: "DRINK_REQ", by: me.current, target: me.current, delta, reason });
+  async function changeDrink(n: number) {
+    const current = stateRef.current;
+    const next = clone(current);
+    ensurePlayer(next, me.current);
+
+    next.players[me.current].drinks = Math.max(0, next.players[me.current].drinks + n);
+
+    setState(next);
+
+    await send({
+      type: "UPDATE",
+      id: me.current,
+      patch: { drinks: next.players[me.current].drinks },
+    });
   }
-
-  async function startCall(type: PowerType) {
-    if (!roomRef.current) return;
-    if (!me.current) return;
-    await send({ type: "CALL_START_REQ", callType: type, by: me.current });
-  }
-
-  async function tapCall() {
-    const cur = stateRef.current;
-    if (!roomRef.current) return;
-    if (!me.current) return;
-    if (!cur.activeCall) return;
-
-    await send({ type: "CALL_TAP", callId: cur.activeCall.id, by: me.current, t: nowMs() });
-  }
-
-  async function qmGotchaStart() {
-    const cur = stateRef.current;
-    if (cur.powers.questionMaster !== me.current) return;
-    setPickMode({ kind: "QM", by: me.current });
-  }
-
-  async function onPickTarget(targetId: string) {
-    const cur = stateRef.current;
-    if (!pickMode) return;
-
-    if (targetId.startsWith(EMPTY_PREFIX)) return;
-
-    if (pickMode.kind === "MATE") {
-      await send({ type: "SET_MATE_REQ", by: pickMode.by, to: targetId });
-      setPickMode(null);
-      return;
-    }
-
-    if (pickMode.kind === "QM") {
-      await send({ type: "QM_GOTCHA_REQ", by: pickMode.by, target: targetId });
-      setPickMode(null);
-      return;
-    }
-
-    if (pickMode.kind === "TWO") {
-      await send({
-        type: "DRINK_REQ",
-        by: pickMode.by,
-        target: targetId,
-        delta: 1,
-        reason: "2_pick",
-      });
-      setPickMode(null);
-      return;
-    }
-  }
-
-  async function addRule(ruleName: string) {
-    const cur = stateRef.current;
-    if (!roomRef.current) return;
-    if (!me.current) return;
-    if (!cur.host) return;
-    if (cur.powers.ruleMaster !== me.current) return;
-
-    await send({ type: "RULE_ADD_REQ", by: me.current, name: ruleName });
-    setRulesOpen(false);
-  }
-
-  async function clearRule(ruleId: string) {
-    const cur = stateRef.current;
-    if (!roomRef.current) return;
-    if (!me.current) return;
-    if (!cur.host) return;
-
-    const allowed = cur.host === me.current || cur.powers.ruleMaster === me.current;
-    if (!allowed) return;
-
-    await send({ type: "RULE_CLEAR_REQ", by: me.current, ruleId });
-  }
-
-  /* =========================
-     AUTO-CLEAR STUCK PICK MODE
-  ========================= */
-
-  useEffect(() => {
-    if (!pickMode) return;
-    const r = rankOf(state.currentCard);
-
-    if (pickMode.kind === "MATE" && r !== "8") setPickMode(null);
-    if (pickMode.kind === "TWO" && r !== "2") setPickMode(null);
-    if (pickMode.kind === "QM" && state.powers.questionMaster !== me.current) setPickMode(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.currentCard, state.powers.questionMaster]);
 
   /* =========================
      CONNECT / DISCONNECT
@@ -595,7 +278,9 @@ export default function Page() {
     setJoining(true);
 
     try {
-      const res = await fetch(`/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`);
+      const res = await fetch(
+        `/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`
+      );
       const data = await res.json();
 
       if (!res.ok) throw new Error(data?.error || `Token API failed (${res.status})`);
@@ -616,7 +301,9 @@ export default function Page() {
 
         const tile = ensureTile(participant.identity);
         if (!tile) return;
-        if (track.kind === Track.Kind.Video) track.attach(tile.querySelector("video")!);
+        if (track.kind === Track.Kind.Video) {
+          track.attach(tile.querySelector("video")!);
+        }
       });
 
       room.on(RoomEvent.ParticipantConnected, (participant) => {
@@ -641,117 +328,26 @@ export default function Page() {
         const msg = decode(buf);
         if (!msg) return;
 
-        const cur = stateRef.current;
-        const isHost = cur.host === me.current;
-
         if (msg.type === "STATE") {
           setState(msg.data);
-          scheduleResolveIfHost(msg.data);
           return;
         }
 
         if (msg.type === "DRAW") {
-          if (isHost) draw();
-          return;
-        }
-
-        if (msg.type === "DRINK_REQ") {
-          if (!isHost) return;
-          const next = clone(cur);
-          ensurePlayer(next, msg.target);
-          applyDrinkWithMates(next, msg.target, msg.delta);
-          setState(next);
-          send({ type: "STATE", data: next });
-          return;
-        }
-
-        if (msg.type === "SET_MATE_REQ") {
-          if (!isHost) return;
-          const next = clone(cur);
-          ensurePlayer(next, msg.by);
-          ensurePlayer(next, msg.to);
-          addMate(next, msg.by, msg.to);
-          setState(next);
-          send({ type: "STATE", data: next });
-          return;
-        }
-
-        if (msg.type === "QM_GOTCHA_REQ") {
-          if (!isHost) return;
-          const next = clone(cur);
-          ensurePlayer(next, msg.target);
-          applyDrinkWithMates(next, msg.target, 1);
-          setState(next);
-          send({ type: "STATE", data: next });
-          return;
-        }
-
-        if (msg.type === "RULE_ADD_REQ") {
-          if (!isHost) return;
-          const next = clone(cur);
-          const rule: ActiveRule = {
-            id: uid("rule"),
-            name: msg.name,
-            by: msg.by,
-            createdAt: nowMs(),
-          };
-          next.activeRules = [rule, ...next.activeRules].slice(0, 12);
-          setState(next);
-          send({ type: "STATE", data: next });
-          return;
-        }
-
-        if (msg.type === "RULE_CLEAR_REQ") {
-          if (!isHost) return;
-          const next = clone(cur);
-          next.activeRules = next.activeRules.filter((r: ActiveRule) => r.id !== msg.ruleId);
-          setState(next);
-          send({ type: "STATE", data: next });
-          return;
-        }
-
-        if (msg.type === "CALL_START_REQ") {
-          if (!isHost) return;
-          const next = clone(cur);
-          if (next.activeCall) return;
-
-          const t = nowMs();
-
-          if (msg.callType === "HEAVEN") {
-            if (next.powers.heavenHolder !== msg.by) return;
-            if (t < (next.cooldowns.heavenReadyAt || 0)) return;
-          }
-          if (msg.callType === "THUMB") {
-            if (next.powers.thumbHolder !== msg.by) return;
-            if (t < (next.cooldowns.thumbReadyAt || 0)) return;
-          }
-
-          next.activeCall = {
-            id: uid("call"),
-            type: msg.callType,
-            by: msg.by,
-            endsAt: t + 2600,
-            taps: {},
-          };
-
-          setState(next);
-          send({ type: "STATE", data: next });
-          scheduleResolveIfHost(next);
-          return;
-        }
-
-        if (msg.type === "CALL_TAP") {
-          if (!isHost) return;
-          const next = clone(cur);
-          if (!next.activeCall) return;
-          if (next.activeCall.id !== msg.callId) return;
-
-          if (next.activeCall.taps[msg.by] == null) {
-            next.activeCall.taps[msg.by] = msg.t;
-            setState(next);
-            send({ type: "STATE", data: next });
+          const current = stateRef.current;
+          if (roomRef.current && me.current && current.host === me.current) {
+            draw();
           }
           return;
+        }
+
+        if (msg.type === "UPDATE") {
+          setState((s) => {
+            const n = clone(s);
+            ensurePlayer(n, msg.id);
+            Object.assign(n.players[msg.id], msg.patch);
+            return n;
+          });
         }
       });
 
@@ -808,32 +404,21 @@ export default function Page() {
 
     if (videoRef.current) videoRef.current.innerHTML = "";
 
-    if (callTimerRef.current) {
-      window.clearTimeout(callTimerRef.current);
-      callTimerRef.current = null;
-    }
-
-    setPickMode(null);
-    setRulesOpen(false);
-
     setState({
       host: null,
       deck: [],
       currentCard: null,
       players: {},
-      powers: { heavenHolder: null, thumbHolder: null, questionMaster: null, ruleMaster: null },
-      cooldowns: { heavenReadyAt: 0, thumbReadyAt: 0 },
-      activeCall: null,
-      matesOut: {},
-      activeRules: [],
     });
 
     setConnected(false);
   }
 
   /* =========================
-     ORDERING / LAYOUT
+     UI / ORDERING / LAYOUT
   ========================= */
+
+  const players = useMemo(() => Object.values(state.players), [state.players]);
 
   const orderedPlayers = useMemo(() => {
     const mine = me.current ? [me.current] : [];
@@ -845,97 +430,472 @@ export default function Page() {
 
   useEffect(() => {
     if (!connected) return;
-
-    // Ensure placeholders to keep the grid looking like "6 slots"
-    ensureEmptySlots(6, orderedPlayers);
-
-    // Keep order stable: players first, empties last
     reorderTiles(orderedPlayers);
-
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, orderedPlayers.join("|")]);
 
-  const effectiveCount = 6; // keep 6 slots visually
+  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
   const layout = computeVideoLayout(effectiveCount);
-
-  /* =========================
-     TILE META (powers + mates)
-  ========================= */
-
-  const powerBadges = useMemo(() => {
-    const badges: Record<string, string[]> = {};
-    const push = (id: string | null, label: string) => {
-      if (!id) return;
-      if (!badges[id]) badges[id] = [];
-      badges[id].push(label);
-    };
-    push(state.powers.heavenHolder, "☁️");
-    push(state.powers.thumbHolder, "👍");
-    push(state.powers.questionMaster, "❓");
-    push(state.powers.ruleMaster, "👑");
-    return badges;
-  }, [state.powers]);
-
-  useEffect(() => {
-    const root = videoRef.current;
-    if (!root) return;
-
-    const tiles = Array.from(root.querySelectorAll(".vTile")) as HTMLDivElement[];
-    for (const tile of tiles) {
-      const id = tile.dataset.id || "";
-      if (!id || id.startsWith(EMPTY_PREFIX)) continue;
-
-      const meta = tile.querySelector(".vMeta") as HTMLDivElement | null;
-      if (!meta) continue;
-
-      const badges = powerBadges[id] || [];
-      const outs = state.matesOut[id] || [];
-
-      const badgeStr = badges.length ? badges.join(" ") : "";
-      const mateStr = outs.length ? `→ ${outs.join(", ")}` : "";
-
-      meta.innerText = [badgeStr, mateStr].filter(Boolean).join("  ");
-    }
-  }, [powerBadges, state.matesOut, connected]);
-
-  /* =========================
-     UI DERIVED
-  ========================= */
-
-  const r = rankOf(state.currentCard);
-  const isHost = state.host === me.current;
-
-  const heavenReadyIn = Math.max(0, state.cooldowns.heavenReadyAt - nowMs());
-  const thumbReadyIn = Math.max(0, state.cooldowns.thumbReadyAt - nowMs());
-
-  const canHeaven = connected && state.powers.heavenHolder === me.current && !state.activeCall && heavenReadyIn === 0;
-  const canThumb = connected && state.powers.thumbHolder === me.current && !state.activeCall && thumbReadyIn === 0;
-  const canQM = connected && state.powers.questionMaster === me.current && !state.activeCall;
-  const canRule = connected && state.powers.ruleMaster === me.current && !state.activeCall;
-
-  const showOverlayCall = connected && !!state.activeCall;
-  const overlayTitle = state.activeCall?.type === "HEAVEN" ? "HEAVEN CALLED ☁️" : "THUMB CALLED 👍";
-  const overlayLocked = !!state.activeCall && state.activeCall.taps[me.current] != null;
-
-  const deckLeft = state.deck.length;
-
-  const pickHint =
-    pickMode?.kind === "MATE"
-      ? "Tap a player tile to add as your mate (one-way)"
-      : pickMode?.kind === "QM"
-      ? "Tap the player who answered (GOTCHA)"
-      : pickMode?.kind === "TWO"
-      ? "Tap a player tile to make them drink (+1)"
-      : "";
-
-  const ruleText = ruleTextForRank(r);
 
   return (
     <div className="appB">
+      <style jsx global>{`
+        /* =========================
+           ONE-SCREEN B LAYOUT
+        ========================= */
+
+        .appB {
+          height: 100svh;
+          width: min(520px, 100%);
+          margin: 0 auto;
+          padding: 12px;
+          display: grid;
+          grid-template-rows: auto 1fr;
+          gap: 10px;
+          overflow: hidden;
+        }
+
+        /* =========================
+           TOP BAR (MINIMAL)
+        ========================= */
+
+        .topbarB {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .brandB {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+
+        /* ✅ logo container */
+        .logoB {
+          width: 44px;
+          height: 44px;
+          border-radius: 14px;
+          overflow: hidden;
+          border: 1px solid rgba(34, 197, 94, 0.22);
+          background: rgba(2, 6, 23, 0.35);
+          flex: 0 0 auto;
+          display: grid;
+          place-items: center;
+        }
+
+        /* ✅ actual logo image */
+        .logoImgB {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+
+        .titleB {
+          font-size: 18px;
+          font-weight: 1000;
+          letter-spacing: 0.06em;
+          line-height: 1.05;
+          white-space: nowrap;
+        }
+
+        .actionsB {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .btnIconB {
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          background: rgba(15, 23, 42, 0.45);
+          color: rgba(226, 232, 240, 0.95);
+          border-radius: 14px;
+          padding: 10px 12px;
+          font-weight: 900;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+
+        .btnIconB:active {
+          transform: translateY(1px);
+        }
+
+        /* =========================
+           CARDS / COMMON
+        ========================= */
+
+        .cardB {
+          background: rgba(15, 23, 42, 0.45);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          border-radius: 18px;
+          padding: 12px;
+          overflow: hidden;
+          backdrop-filter: blur(10px);
+        }
+
+        .shellB {
+          display: grid;
+          grid-template-rows: 1fr auto;
+          gap: 10px;
+          overflow: hidden;
+          min-height: 0;
+        }
+
+        .joinCardB {
+          display: grid;
+          gap: 10px;
+        }
+
+        .fieldB {
+          display: grid;
+          gap: 6px;
+          font-weight: 900;
+          font-size: 12px;
+          opacity: 0.95;
+        }
+
+        .fieldB input {
+          width: 100%;
+          padding: 12px 12px;
+          border-radius: 14px;
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          background: rgba(2, 6, 23, 0.35);
+          color: rgba(226, 232, 240, 0.95);
+          outline: none;
+        }
+
+        .fieldB input:focus {
+          border-color: rgba(34, 197, 94, 0.35);
+          box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+        }
+
+        .rowB {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+
+        .btnB {
+          border: 0;
+          border-radius: 14px;
+          padding: 12px 14px;
+          font-weight: 900;
+          color: rgba(226, 232, 240, 0.95);
+          background: rgba(148, 163, 184, 0.16);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          cursor: pointer;
+        }
+
+        .btnB:disabled {
+          opacity: 0.55;
+          cursor: default;
+        }
+
+        .btnPrimaryB {
+          background: linear-gradient(180deg, rgba(34, 197, 94, 0.35), rgba(34, 197, 94, 0.18));
+          border-color: rgba(34, 197, 94, 0.28);
+        }
+
+        .btnDangerB {
+          background: linear-gradient(180deg, rgba(248, 113, 113, 0.30), rgba(248, 113, 113, 0.14));
+          border-color: rgba(248, 113, 113, 0.25);
+        }
+
+        .btnTinyB {
+          padding: 10px 12px;
+          border-radius: 12px;
+          font-size: 12px;
+        }
+
+        .noteB {
+          font-size: 12px;
+          opacity: 0.85;
+          line-height: 1.25;
+        }
+
+        /* =========================
+           VIDEO AREA
+        ========================= */
+
+        .videoCardB {
+          display: grid;
+          grid-template-rows: auto 1fr;
+          gap: 10px;
+          min-height: 0;
+        }
+
+        .cardHeadB {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+        }
+
+        .cardHeadB h2 {
+          margin: 0;
+          font-size: 14px;
+          font-weight: 1000;
+          letter-spacing: 0.02em;
+        }
+
+        .videoGridB {
+          min-height: 0;
+          display: grid;
+          gap: 8px;
+          align-content: stretch;
+          justify-content: stretch;
+        }
+
+        .videoGridB[data-layout="l1"] {
+          grid-template-columns: 1fr;
+          grid-template-rows: 1fr;
+        }
+        .videoGridB[data-layout="l2"] {
+          grid-template-columns: repeat(2, 1fr);
+          grid-template-rows: 1fr;
+        }
+        .videoGridB[data-layout="l3"] {
+          grid-template-columns: repeat(3, 1fr);
+          grid-template-rows: 1fr;
+        }
+        .videoGridB[data-layout="l4"] {
+          grid-template-columns: repeat(2, 1fr);
+          grid-template-rows: repeat(2, 1fr);
+        }
+        .videoGridB[data-layout="l5"],
+        .videoGridB[data-layout="l6"] {
+          grid-template-columns: repeat(3, 1fr);
+          grid-template-rows: repeat(2, 1fr);
+        }
+
+        .vTile {
+          position: relative;
+          border-radius: 16px;
+          overflow: hidden;
+          background: rgba(2, 6, 23, 0.35);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          min-height: 0;
+        }
+
+        .vTile video {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          display: block;
+        }
+
+        .vTag {
+          position: absolute;
+          left: 10px;
+          bottom: 10px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 1000;
+          background: rgba(2, 6, 23, 0.55);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          color: rgba(226, 232, 240, 0.95);
+          max-width: calc(100% - 20px);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        /* =========================
+           BOTTOM BAR
+        ========================= */
+
+        .bottomBarB {
+          display: grid;
+          grid-template-columns: 1.15fr 0.85fr;
+          gap: 10px;
+          min-height: 0;
+          align-items: end;
+        }
+
+        .deckMiniB {
+          display: grid;
+          grid-template-rows: auto;
+          gap: 10px;
+          min-height: 0;
+        }
+
+        .drawComboB {
+          width: 100%;
+          border: 0;
+          border-radius: 18px;
+          padding: 12px;
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          gap: 12px;
+          align-items: center;
+          color: rgba(226, 232, 240, 0.95);
+          background: linear-gradient(180deg, rgba(34, 197, 94, 0.18), rgba(2, 6, 23, 0.35));
+          border: 1px solid rgba(34, 197, 94, 0.22);
+          cursor: pointer;
+        }
+
+        .drawComboB:active {
+          transform: translateY(1px);
+        }
+
+        .cardSquareB {
+          width: 54px;
+          height: 54px;
+          border-radius: 16px;
+          background: rgba(2, 6, 23, 0.32);
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          display: grid;
+          place-items: center;
+          overflow: hidden;
+        }
+
+        .miniCardB {
+          width: 42px;
+          height: 42px;
+          border-radius: 12px;
+          background: rgba(248, 250, 252, 0.92);
+          border: 1px solid rgba(2, 6, 23, 0.25);
+          display: grid;
+          place-items: start;
+          padding: 6px;
+        }
+
+        .miniCornerB {
+          color: rgba(2, 6, 23, 0.9);
+          font-weight: 1000;
+          font-size: 12px;
+        }
+
+        .drawTextB {
+          min-width: 0;
+          text-align: left;
+        }
+
+        .drawTitleB {
+          font-weight: 1000;
+          letter-spacing: 0.06em;
+          font-size: 16px;
+          line-height: 1.05;
+        }
+
+        .drawSubB {
+          font-size: 12px;
+          opacity: 0.8;
+          margin-top: 4px;
+          font-weight: 900;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .drawMetaB {
+          display: grid;
+          justify-items: end;
+          gap: 6px;
+        }
+
+        .metaPillB {
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 1000;
+          background: rgba(2, 6, 23, 0.35);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          opacity: 0.95;
+          white-space: nowrap;
+        }
+
+        .statsMiniB {
+          display: grid;
+          grid-template-rows: auto 1fr;
+          gap: 10px;
+          min-height: 0;
+        }
+
+        .yourDrinksRowB {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 10px 12px;
+          border-radius: 16px;
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          background: rgba(2, 6, 23, 0.28);
+        }
+
+        .labelMiniB {
+          font-size: 12px;
+          opacity: 0.8;
+          font-weight: 900;
+        }
+
+        .drinkNumB {
+          font-weight: 1000;
+          font-size: 18px;
+        }
+
+        .btnGroupB {
+          display: inline-flex;
+          gap: 8px;
+        }
+
+        .playersMiniListB {
+          min-height: 0;
+          overflow: auto;
+          border-radius: 16px;
+          border: 1px solid rgba(148, 163, 184, 0.14);
+          background: rgba(2, 6, 23, 0.18);
+        }
+
+        .pRowB {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 10px 12px;
+          border-bottom: 1px solid rgba(148, 163, 184, 0.10);
+        }
+
+        .pRowB:last-child {
+          border-bottom: 0;
+        }
+
+        .pNameB {
+          font-weight: 1000;
+        }
+
+        .pMetaB {
+          opacity: 0.9;
+          font-weight: 900;
+          font-size: 12px;
+          white-space: nowrap;
+        }
+
+        @media (max-width: 420px) {
+          .bottomBarB {
+            grid-template-columns: 1fr;
+          }
+        }
+      `}</style>
+
+      {/* ✅ MINIMAL HEADER */}
       <div className="topbarB">
         <div className="brandB">
-          <div className="logoB">KAD</div>
-          <div className="titleOnlyB">KAD-KINGS</div>
+          <div className="logoB">
+            {/* ✅ replace with your actual logo image in /public */}
+            <img className="logoImgB" src="/kylesadick-logo.png" alt="Kylesadick logo" />
+          </div>
+          <div className="titleB">KAD-KINGS</div>
+        </div>
+
+        <div className="actionsB">
+          <button className="btnIconB" onClick={toggleFullscreen} type="button">
+            {isFs ? "Exit" : "Fullscreen"}
+          </button>
         </div>
       </div>
 
@@ -948,7 +908,7 @@ export default function Page() {
 
           <div className="fieldB">
             <div>Name</div>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Wes" />
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="your name" />
           </div>
 
           <div className="rowB">
@@ -957,87 +917,68 @@ export default function Page() {
             </button>
           </div>
 
-          {errMsg ? <div className="noteB errB">{errMsg}</div> : <div className="noteB">Join, then open the same room on another phone to test sync.</div>}
+          {errMsg ? (
+            <div className="noteB" style={{ color: "rgba(248,113,113,0.95)", fontWeight: 900 }}>
+              {errMsg}
+            </div>
+          ) : (
+            <div className="noteB">If Join does nothing, the error will show here.</div>
+          )}
         </div>
       ) : (
         <div className="shellB">
+          {/* MAIN: VIDEO */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
               <div className="rowB" style={{ justifyContent: "flex-end" }}>
-                <div className="tinyPillB">Host: {state.host || "—"}</div>
+                <div
+                  className="metaPillB"
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 999,
+                    background: "rgba(2,6,23,0.35)",
+                    border: "1px solid rgba(148,163,184,0.16)",
+                  }}
+                >
+                  Host: <b style={{ marginLeft: 6 }}>{state.host || "—"}</b>
+                </div>
+
                 <button className="btnB btnDangerB btnTinyB" onClick={disconnect}>
                   Leave
                 </button>
               </div>
             </div>
 
-            {errMsg ? <div className="noteB errB">{errMsg}</div> : null}
-
-            {pickMode ? (
-              <div className="pickHintRowB">
-                <div className="pickHintB">{pickHint}</div>
-                <button className="pickCancelB" onClick={() => setPickMode(null)}>
-                  Cancel
-                </button>
+            {errMsg ? (
+              <div className="noteB" style={{ color: "rgba(248,113,113,0.95)", fontWeight: 900 }}>
+                {errMsg}
               </div>
             ) : null}
 
-            <div
-              ref={videoRef}
-              className={"videoGridB" + (pickMode ? " pickingB" : "")}
-              data-layout={layout}
-              onClick={(e) => {
-                if (!pickMode) return;
-                const target = (e.target as HTMLElement).closest(".vTile") as HTMLDivElement | null;
-                if (!target) return;
-                const id = target.dataset.id || "";
-                if (!id) return;
-
-                if (pickMode.kind === "MATE" && id === pickMode.by) return;
-                onPickTarget(id);
-              }}
-            />
+            <div ref={videoRef} className="videoGridB" data-layout={layout} />
           </div>
 
+          {/* BOTTOM */}
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw}>
                 <div className="cardSquareB">
                   <div className="miniCardB">
-                    <div className="miniCornerB">{state.currentCard ? state.currentCard : "—"}</div>
-                    <div className="miniRankB">{r || "—"}</div>
+                    <div className="miniCornerB">{state.currentCard || "—"}</div>
                   </div>
                 </div>
 
                 <div className="drawTextB">
-                  <div className="drawTitleB">TURN: {state.host || "—"}</div>
-                  <div className="drawSubB">{ruleText}</div>
+                  <div className="drawTitleB">DRAW CARD</div>
+                  <div className="drawSubB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
                 </div>
 
                 <div className="drawMetaB">
-                  <div className="metaPillB">{isHost ? "HOST" : "GUEST"}</div>
-                  <div className="metaPillB">🃏 {deckLeft}</div>
+                  <div className="metaPillB">🃏 {state.deck.length}</div>
+                  <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
                 </div>
               </button>
-
-              <div className="powerRowB">
-                <button className={"powerBtnB" + (canHeaven ? " onB" : "")} disabled={!canHeaven} onClick={() => startCall("HEAVEN")} title="Heaven (7)">
-                  ☁️ {state.powers.heavenHolder === me.current ? (heavenReadyIn ? `${Math.ceil(heavenReadyIn / 1000)}s` : "HEAVEN") : "HEAVEN"}
-                </button>
-
-                <button className={"powerBtnB" + (canThumb ? " onB" : "")} disabled={!canThumb} onClick={() => startCall("THUMB")} title="Thumbmaster (J)">
-                  👍 {state.powers.thumbHolder === me.current ? (thumbReadyIn ? `${Math.ceil(thumbReadyIn / 1000)}s` : "THUMB") : "THUMB"}
-                </button>
-
-                <button className={"powerBtnB" + (canQM ? " onB" : "")} disabled={!canQM} onClick={qmGotchaStart} title="Question Master (Q)">
-                  ❓ {state.powers.questionMaster === me.current ? "GOTCHA" : "QM"}
-                </button>
-
-                <button className={"powerBtnB" + (canRule ? " onB" : "")} disabled={!canRule} onClick={() => setRulesOpen(true)} title="Rule Master (K)">
-                  👑 {state.powers.ruleMaster === me.current ? "RULE" : "K"}
-                </button>
-              </div>
             </div>
 
             <div className="cardB statsMiniB">
@@ -1047,50 +988,24 @@ export default function Page() {
                   <div className="drinkNumB">{state.players[me.current]?.drinks ?? 0}</div>
                 </div>
                 <div className="btnGroupB">
-                  <button className="btnB btnTinyB" onClick={() => requestDrink(-1, "manual")}>
+                  <button className="btnB btnTinyB" onClick={() => changeDrink(-1)}>
                     -1
                   </button>
-                  <button className="btnB btnPrimaryB btnTinyB" onClick={() => requestDrink(1, "manual")}>
+                  <button className="btnB btnPrimaryB btnTinyB" onClick={() => changeDrink(1)}>
                     +1
                   </button>
                 </div>
               </div>
 
-              {state.activeRules.length ? (
-                <div className="rulesBoxB">
-                  <div className="rulesHeadB">
-                    <div className="rulesTitleB">Active rules</div>
-                    <div className="rulesHintB">{state.powers.ruleMaster === me.current || state.host === me.current ? "Tap × to remove" : ""}</div>
-                  </div>
-                  <div className="rulesListB">
-                    {state.activeRules.map((rule) => (
-                      <div key={rule.id} className="ruleRowB">
-                        <div className="ruleTextB">{rule.name}</div>
-                        {state.powers.ruleMaster === me.current || state.host === me.current ? (
-                          <button className="ruleXBtnB" onClick={() => clearRule(rule.id)} title="Remove rule">
-                            ×
-                          </button>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
               <div className="playersMiniListB">
                 {orderedPlayers.map((id) => {
                   const p = state.players[id];
                   if (!p) return null;
-                  const outs = state.matesOut[id] || [];
                   return (
                     <div key={p.name} className="pRowB">
-                      <div className="pNameB">
-                        {p.name}
-                        {powerBadges[id]?.length ? <span className="pBadgesB"> {powerBadges[id].join(" ")}</span> : null}
-                      </div>
+                      <div className="pNameB">{p.name}</div>
                       <div className="pMetaB">
                         🍺 {p.drinks} · 🃏 {p.cardsDrawn}
-                        {outs.length ? <span className="pMateB"> · → {outs.join(", ")}</span> : null}
                       </div>
                     </div>
                   );
@@ -1098,44 +1013,8 @@ export default function Page() {
               </div>
             </div>
           </div>
-
-          {showOverlayCall ? (
-            <div className="overlayB">
-              <div className="overlayCardB">
-                <div className="overlayTitleB">{overlayTitle}</div>
-                <div className="overlaySubB">Tap fast. Last to tap drinks.</div>
-
-                <button className={"overlayTapB" + (overlayLocked ? " lockedB" : "")} onClick={tapCall} disabled={overlayLocked}>
-                  {overlayLocked ? "LOCKED" : "TAP"}
-                </button>
-
-                <div className="overlayTimerB">Ends in {Math.max(0, Math.ceil(((state.activeCall?.endsAt || 0) - nowMs()) / 1000))}s</div>
-              </div>
-            </div>
-          ) : null}
-
-          {rulesOpen ? (
-            <div className="overlayB" onClick={() => setRulesOpen(false)}>
-              <div className="rulesModalB" onClick={(e) => e.stopPropagation()}>
-                <div className="rulesModalTopB">
-                  <div className="rulesModalTitleB">👑 Make a rule</div>
-                  <button className="ruleXBtnB" onClick={() => setRulesOpen(false)} title="Close">
-                    ×
-                  </button>
-                </div>
-                <div className="rulesGridB">
-                  {RULE_PRESETS.map((r) => (
-                    <button key={r.value} className="rulePickBtnB" onClick={() => addRule(r.value)}>
-                      {r.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="rulesModalNoteB">Rules stay active until removed.</div>
-              </div>
-            </div>
-          ) : null}
         </div>
       )}
     </div>
   );
-       }
+}

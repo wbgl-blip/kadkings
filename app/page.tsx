@@ -1284,4 +1284,4 @@ function AttachLocalOnConnect({
   }, [connected, me, roomRef, attachLocalTracks]);
 
   return null;
-             }
+              }

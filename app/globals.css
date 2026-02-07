@@ -105,7 +105,6 @@ input {
   cursor: pointer;
 }
 
-/* (legacy) */
 .logoB {
   width: 34px;
   height: 34px;
@@ -226,7 +225,7 @@ input {
 
 .videoCardB {
   display: grid;
-  grid-template-rows: auto auto auto 1fr;
+  grid-template-rows: auto 1fr; /* head + grid (simple + stronger) */
   gap: 10px;
   min-height: 0;
 }
@@ -283,19 +282,14 @@ input {
   cursor: pointer;
 }
 
-/* ✅ GRID: prevent “one huge tile + stacked rows” by controlling track sizing */
 .videoGridB {
   min-height: 0;
   display: grid;
   gap: 8px;
   align-content: stretch;
   justify-content: stretch;
-
-  /* Key: don’t let implicit rows autosize into weird bars */
-  grid-auto-rows: 1fr;
 }
 
-/* Layouts */
 .videoGridB[data-layout="l1"] {
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;
@@ -323,9 +317,6 @@ input {
   outline-offset: -2px;
 }
 
-/* ✅ TILE SIZE FIX
-   - For multi-tile layouts, force a “tile” aspect so empties don’t become long bars.
-   - For l1, allow a wide “hero” tile (still not insane). */
 .vTile {
   position: relative;
   border-radius: 16px;
@@ -334,34 +325,6 @@ input {
   border: 1px solid rgba(148, 163, 184, 0.16);
   min-height: 0;
   cursor: pointer;
-}
-
-/* Multi-tile layouts: keep them tile-shaped */
-.videoGridB[data-layout="l2"] .vTile,
-.videoGridB[data-layout="l3"] .vTile,
-.videoGridB[data-layout="l4"] .vTile,
-.videoGridB[data-layout="l5"] .vTile,
-.videoGridB[data-layout="l6"] .vTile {
-  aspect-ratio: 16 / 10;
-}
-
-/* l1: keep a strong tile, not a skinny bar */
-.videoGridB[data-layout="l1"] .vTile {
-  aspect-ratio: 16 / 7;
-}
-
-/* Fallback for older browsers without aspect-ratio */
-@supports not (aspect-ratio: 1 / 1) {
-  .videoGridB[data-layout="l2"] .vTile,
-  .videoGridB[data-layout="l3"] .vTile,
-  .videoGridB[data-layout="l4"] .vTile,
-  .videoGridB[data-layout="l5"] .vTile,
-  .videoGridB[data-layout="l6"] .vTile {
-    min-height: 110px;
-  }
-  .videoGridB[data-layout="l1"] .vTile {
-    min-height: 150px;
-  }
 }
 
 .vTile video {
@@ -444,6 +407,33 @@ input {
   gap: 10px;
   min-height: 0;
   align-items: end;
+}
+
+/* =========================
+   PRIORITIZE VIDEO SPACE
+   - keep bottom area from crushing video
+   - bottom becomes scrollable when it gets tall
+========================= */
+
+.shellB {
+  /* ensures the top (video) gets priority space */
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.bottomBarB {
+  max-height: 44svh; /* cap bottom area height */
+  overflow: auto;    /* scroll inside bottom, not the whole page */
+  padding-bottom: 2px;
+}
+
+.videoCardB {
+  min-height: 0;
+}
+
+.videoGridB {
+  min-height: 0;
+  /* if someone has only 1-2 players, still keep some visible height */
+  min-block-size: 180px;
 }
 
 .deckMiniB {
@@ -839,11 +829,53 @@ input {
   font-weight: 900;
 }
 
+/* =========================
+   MOBILE TIGHTENING
+   - shrink bottom a bit more so video wins
+========================= */
+
 @media (max-width: 420px) {
+  .appB {
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .cardB {
+    padding: 10px;
+  }
+
   .bottomBarB {
     grid-template-columns: 1fr;
+    max-height: 48svh; /* single column can be a bit taller */
+    gap: 8px;
   }
+
+  .drawComboB {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .cardSquareB {
+    width: 86px;
+    height: 86px;
+    border-radius: 16px;
+  }
+
+  .bigCardB {
+    width: 86px;
+    height: 70px;
+  }
+
+  .turnLineB {
+    font-size: 15px;
+  }
+
+  .metaPillB {
+    padding: 6px 9px;
+    font-size: 11px;
+  }
+
   .rulesGridB {
     grid-template-columns: 1fr;
   }
-  }
+}

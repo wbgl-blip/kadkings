@@ -23,10 +23,6 @@ input {
   appearance: none;
 }
 
-/* =========================================================
-   B ONE-SCREEN LAYOUT
-========================================================= */
-
 .appB {
   height: 100svh;
   width: min(520px, 100%);
@@ -38,7 +34,6 @@ input {
   overflow: hidden;
 }
 
-/* TOP BAR (minimal as requested) */
 .topbarB {
   display: flex;
   align-items: center;
@@ -60,7 +55,7 @@ input {
   place-items: center;
   font-weight: 1000;
   letter-spacing: 0.08em;
-  background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(34, 197, 94, 0.10));
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.22), rgba(34, 197, 94, 0.1));
   border: 1px solid rgba(34, 197, 94, 0.22);
   color: rgba(226, 232, 240, 0.95);
 }
@@ -89,7 +84,6 @@ input {
   cursor: pointer;
 }
 
-/* SHELL */
 .shellB {
   display: grid;
   grid-template-rows: 1fr auto;
@@ -163,7 +157,7 @@ input {
 }
 
 .btnDangerB {
-  background: linear-gradient(180deg, rgba(248, 113, 113, 0.30), rgba(248, 113, 113, 0.14));
+  background: linear-gradient(180deg, rgba(248, 113, 113, 0.3), rgba(248, 113, 113, 0.14));
   border-color: rgba(248, 113, 113, 0.25);
 }
 
@@ -185,7 +179,7 @@ input {
 }
 
 /* =========================
-   VIDEO AREA (dominant)
+   VIDEO
 ========================= */
 
 .videoCardB {
@@ -223,7 +217,7 @@ input {
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(34, 197, 94, 0.22);
-  background: rgba(34, 197, 94, 0.10);
+  background: rgba(34, 197, 94, 0.1);
   font-weight: 1000;
   font-size: 12px;
 }
@@ -305,7 +299,7 @@ input {
   border-radius: 12px;
   font-size: 11px;
   font-weight: 900;
-  background: rgba(2, 6, 23, 0.50);
+  background: rgba(2, 6, 23, 0.5);
   border: 1px solid rgba(148, 163, 184, 0.16);
   color: rgba(226, 232, 240, 0.95);
   max-width: calc(100% - 20px);
@@ -315,7 +309,7 @@ input {
 }
 
 /* =========================
-   BOTTOM BAR
+   BOTTOM
 ========================= */
 
 .bottomBarB {
@@ -347,11 +341,6 @@ input {
   cursor: pointer;
 }
 
-.drawComboB:active {
-  transform: translateY(1px);
-}
-
-/* BIGGER CARD AS REQUESTED (keep area same, make card the focal point) */
 .cardSquareB {
   width: 96px;
   height: 96px;
@@ -431,7 +420,7 @@ input {
 /* Power buttons */
 .powerRowB {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
 
@@ -448,7 +437,7 @@ input {
 
 .powerBtnB.onB {
   border-color: rgba(34, 197, 94, 0.26);
-  background: rgba(34, 197, 94, 0.10);
+  background: rgba(34, 197, 94, 0.1);
 }
 
 .powerBtnB:disabled {
@@ -459,7 +448,7 @@ input {
 /* Stats */
 .statsMiniB {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: auto auto 1fr;
   gap: 10px;
   min-height: 0;
 }
@@ -505,7 +494,7 @@ input {
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.10);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
 }
 
 .pRowB:last-child {
@@ -532,6 +521,71 @@ input {
 
 .pMateB {
   opacity: 0.85;
+}
+
+/* Rules box */
+.rulesBoxB {
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(2, 6, 23, 0.18);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.rulesHeadB {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.rulesTitleB {
+  font-weight: 1100;
+  font-size: 12px;
+  opacity: 0.95;
+}
+
+.rulesHintB {
+  font-size: 11px;
+  opacity: 0.7;
+  font-weight: 900;
+}
+
+.rulesListB {
+  display: grid;
+  gap: 8px;
+}
+
+.ruleRowB {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.ruleTextB {
+  font-size: 12px;
+  font-weight: 1000;
+  opacity: 0.95;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ruleXBtnB {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.22);
+  color: rgba(226, 232, 240, 0.95);
+  font-weight: 1100;
+  cursor: pointer;
 }
 
 /* Overlay */
@@ -593,11 +647,62 @@ input {
   font-weight: 900;
 }
 
+/* Rules modal */
+.rulesModalB {
+  width: min(460px, 100%);
+  border-radius: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.90);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.rulesModalTopB {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rulesModalTitleB {
+  font-weight: 1100;
+  letter-spacing: 0.04em;
+  font-size: 14px;
+}
+
+.rulesGridB {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.rulePickBtnB {
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(2, 6, 23, 0.22);
+  color: rgba(226, 232, 240, 0.95);
+  font-weight: 1100;
+  padding: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.rulePickBtnB:active {
+  transform: translateY(1px);
+}
+
+.rulesModalNoteB {
+  font-size: 12px;
+  opacity: 0.8;
+  font-weight: 900;
+}
+
 @media (max-width: 420px) {
   .bottomBarB {
     grid-template-columns: 1fr;
   }
-  .powerRowB {
-    grid-template-columns: 1fr 1fr;
+  .rulesGridB {
+    grid-template-columns: 1fr;
   }
   }

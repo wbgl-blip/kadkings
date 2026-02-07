@@ -151,6 +151,44 @@ const RULE_PRESETS: { label: string; value: string }[] = [
 ];
 
 /* =========================
+   CARD RULE TEXT
+========================= */
+
+function ruleTextForRank(r: string | null) {
+  if (!r) return "Draw to start";
+  switch (r) {
+    case "A":
+      return "A = Waterfall (drawer starts when ready)";
+    case "2":
+      return "2 = Pick someone to drink (+1)";
+    case "3":
+      return "3 = Drawer drinks (+1)";
+    case "4":
+      return "4 = Whores (girls drink)";
+    case "5":
+      return "5 = Guys drink";
+    case "6":
+      return "6 = Dicks (everyone drinks +1)";
+    case "7":
+      return "7 = Heaven (power • last to tap drinks)";
+    case "8":
+      return "8 = Mate (one-way chain)";
+    case "9":
+      return "9 = Rhyme (vote loser drinks)";
+    case "10":
+      return "10 = Categories (vote loser drinks)";
+    case "J":
+      return "J = Thumbmaster (power • last to tap drinks)";
+    case "Q":
+      return "Q = Question Master (gotcha)";
+    case "K":
+      return "K = Make a rule (stays active)";
+    default:
+      return `${r} = (custom)`;
+  }
+}
+
+/* =========================
    MAIN APP
 ========================= */
 
@@ -158,7 +196,6 @@ export default function Page() {
   const roomRef = useRef<Room | null>(null);
   const me = useRef<string>("");
   const videoRef = useRef<HTMLDivElement>(null);
-
   const callTimerRef = useRef<number | null>(null);
 
   const [roomCode, setRoomCode] = useState("kad");
@@ -192,6 +229,8 @@ export default function Page() {
      VIDEO HANDLING
   ========================= */
 
+  const EMPTY_PREFIX = "__empty__:";
+
   function ensureTile(id: string) {
     const root = videoRef.current;
     if (!root) return null;
@@ -202,6 +241,19 @@ export default function Page() {
       el = document.createElement("div");
       el.className = "vTile";
       el.dataset.id = id;
+
+      if (id.startsWith(EMPTY_PREFIX)) {
+        el.classList.add("emptyB");
+        const plus = document.createElement("div");
+        plus.className = "vPlus";
+        plus.innerText = "+";
+        const tag = document.createElement("div");
+        tag.className = "vTag";
+        tag.innerText = "Empty";
+        el.append(plus, tag);
+        root.append(el);
+        return el;
+      }
 
       const v = document.createElement("video");
       v.autoplay = true;
@@ -224,10 +276,25 @@ export default function Page() {
   }
 
   function removeTile(id: string) {
+    if (id.startsWith(EMPTY_PREFIX)) return;
     const root = videoRef.current;
     if (!root) return;
     const el = root.querySelector(`[data-id="${CSS.escape(id)}"]`);
     if (el) el.remove();
+  }
+
+  function ensureEmptySlots(totalSlots: number, realIds: string[]) {
+    const root = videoRef.current;
+    if (!root) return;
+
+    // Remove old empties beyond desired count
+    const empties = Array.from(root.querySelectorAll(`.vTile[data-id^="${EMPTY_PREFIX}"]`)) as HTMLElement[];
+    for (const e of empties) e.remove();
+
+    const missing = Math.max(0, totalSlots - realIds.length);
+    for (let i = 0; i < missing; i++) {
+      ensureTile(`${EMPTY_PREFIX}${i + 1}`);
+    }
   }
 
   function reorderTiles(order: string[]) {
@@ -240,7 +307,15 @@ export default function Page() {
       if (id) map.set(id, el as HTMLElement);
     });
 
+    // Put real players first
     for (const id of order) {
+      const el = map.get(id);
+      if (el) root.appendChild(el);
+    }
+
+    // Then empties
+    const empties = Array.from(map.keys()).filter((k) => k.startsWith(EMPTY_PREFIX)).sort();
+    for (const id of empties) {
       const el = map.get(id);
       if (el) root.appendChild(el);
     }
@@ -391,13 +466,10 @@ export default function Page() {
     } else if (r === "8") {
       setPickMode({ kind: "MATE", by: me.current });
     } else if (r === "2") {
-      // ✅ 2 = host taps a tile to pick someone to drink (+1)
       setPickMode({ kind: "TWO", by: me.current });
     } else if (r === "3") {
-      // 3 = drawer drinks (+1)
       applyDrinkWithMates(next, me.current, 1);
     } else if (r === "6") {
-      // 6 = everyone drinks (+1)
       for (const id of Object.keys(next.players)) {
         ensurePlayer(next, id);
         next.players[id].drinks = Math.max(0, next.players[id].drinks + 1);
@@ -441,21 +513,20 @@ export default function Page() {
     const cur = stateRef.current;
     if (!pickMode) return;
 
-    // ✅ Mate selection (8)
+    if (targetId.startsWith(EMPTY_PREFIX)) return;
+
     if (pickMode.kind === "MATE") {
       await send({ type: "SET_MATE_REQ", by: pickMode.by, to: targetId });
       setPickMode(null);
       return;
     }
 
-    // ✅ QM gotcha (Q)
     if (pickMode.kind === "QM") {
       await send({ type: "QM_GOTCHA_REQ", by: pickMode.by, target: targetId });
       setPickMode(null);
       return;
     }
 
-    // ✅ 2 selection: target drinks (+1)
     if (pickMode.kind === "TWO") {
       await send({
         type: "DRINK_REQ",
@@ -474,7 +545,6 @@ export default function Page() {
     if (!roomRef.current) return;
     if (!me.current) return;
     if (!cur.host) return;
-
     if (cur.powers.ruleMaster !== me.current) return;
 
     await send({ type: "RULE_ADD_REQ", by: me.current, name: ruleName });
@@ -495,7 +565,6 @@ export default function Page() {
 
   /* =========================
      AUTO-CLEAR STUCK PICK MODE
-     (prevents the "mate" prompt while showing a 2, etc.)
   ========================= */
 
   useEffect(() => {
@@ -776,11 +845,17 @@ export default function Page() {
 
   useEffect(() => {
     if (!connected) return;
+
+    // Ensure placeholders to keep the grid looking like "6 slots"
+    ensureEmptySlots(6, orderedPlayers);
+
+    // Keep order stable: players first, empties last
     reorderTiles(orderedPlayers);
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, orderedPlayers.join("|")]);
 
-  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
+  const effectiveCount = 6; // keep 6 slots visually
   const layout = computeVideoLayout(effectiveCount);
 
   /* =========================
@@ -808,6 +883,8 @@ export default function Page() {
     const tiles = Array.from(root.querySelectorAll(".vTile")) as HTMLDivElement[];
     for (const tile of tiles) {
       const id = tile.dataset.id || "";
+      if (!id || id.startsWith(EMPTY_PREFIX)) continue;
+
       const meta = tile.querySelector(".vMeta") as HTMLDivElement | null;
       if (!meta) continue;
 
@@ -851,9 +928,7 @@ export default function Page() {
       ? "Tap a player tile to make them drink (+1)"
       : "";
 
-  /* =========================
-     RENDER
-  ========================= */
+  const ruleText = ruleTextForRank(r);
 
   return (
     <div className="appB">
@@ -919,9 +994,7 @@ export default function Page() {
                 const id = target.dataset.id || "";
                 if (!id) return;
 
-                // don’t allow self-select for mate
                 if (pickMode.kind === "MATE" && id === pickMode.by) return;
-
                 onPickTarget(id);
               }}
             />
@@ -938,10 +1011,8 @@ export default function Page() {
                 </div>
 
                 <div className="drawTextB">
-                  <div className="drawTitleB">{state.currentCard ? "CURRENT CARD" : "DRAW CARD"}</div>
-                  <div className="drawSubB">
-                    {isHost ? "Tap to draw" : "Tap to request draw"} · Deck: {deckLeft}
-                  </div>
+                  <div className="drawTitleB">TURN: {state.host || "—"}</div>
+                  <div className="drawSubB">{ruleText}</div>
                 </div>
 
                 <div className="drawMetaB">
@@ -1038,9 +1109,7 @@ export default function Page() {
                   {overlayLocked ? "LOCKED" : "TAP"}
                 </button>
 
-                <div className="overlayTimerB">
-                  Ends in {Math.max(0, Math.ceil(((state.activeCall?.endsAt || 0) - nowMs()) / 1000))}s
-                </div>
+                <div className="overlayTimerB">Ends in {Math.max(0, Math.ceil(((state.activeCall?.endsAt || 0) - nowMs()) / 1000))}s</div>
               </div>
             </div>
           ) : null}
@@ -1069,4 +1138,4 @@ export default function Page() {
       )}
     </div>
   );
-  }
+       }

@@ -23,6 +23,12 @@ type GameState = {
   lastDrawBy: string | null;
 
   players: Record<string, PlayerStats>;
+
+  // ✅ Power status holders (so we can show ☁️👍❓️👑 badges)
+  heavenHolder: string | null; // 7
+  thumbHolder: string | null; // J
+  qmHolder: string | null; // Q
+  kingHolder: string | null; // K
 };
 
 type Msg =
@@ -107,7 +113,7 @@ function ruleForCard(card: string | null): string {
     case "6":
       return "6 = Dicks / Kyle’sADick (everyone drinks).";
     case "7":
-      return "7 = Heaven (power button; last to tap/raise loses).";
+      return "7 = Heaven (power button; last loses).";
     case "8":
       return "8 = Mate (one-way chain).";
     case "9":
@@ -165,6 +171,11 @@ export default function Page() {
     turn: null,
     lastDrawBy: null,
     players: {},
+
+    heavenHolder: null,
+    thumbHolder: null,
+    qmHolder: null,
+    kingHolder: null,
   });
 
   const [roomCode, setRoomCode] = useState("kad");
@@ -183,6 +194,11 @@ export default function Page() {
     turn: null,
     lastDrawBy: null,
     players: {},
+
+    heavenHolder: null,
+    thumbHolder: null,
+    qmHolder: null,
+    kingHolder: null,
   });
 
   useEffect(() => {
@@ -284,6 +300,13 @@ export default function Page() {
     ensurePlayer(next, me.current);
     next.players[me.current].cardsDrawn++;
     next.lastDrawBy = me.current;
+
+    // ✅ set power holders based on card (for badges)
+    const { rank } = parseCard(card);
+    if (rank === "7") next.heavenHolder = me.current;
+    if (rank === "J") next.thumbHolder = me.current;
+    if (rank === "Q") next.qmHolder = me.current;
+    if (rank === "K") next.kingHolder = me.current;
 
     next.turn = advanceTurn(next);
 
@@ -388,6 +411,13 @@ export default function Page() {
           const n = clone(s);
           if (n.players[participant.identity]) delete n.players[participant.identity];
           if (n.turn === participant.identity) n.turn = advanceTurn(n);
+
+          // if a holder leaves, clear holder
+          if (n.heavenHolder === participant.identity) n.heavenHolder = null;
+          if (n.thumbHolder === participant.identity) n.thumbHolder = null;
+          if (n.qmHolder === participant.identity) n.qmHolder = null;
+          if (n.kingHolder === participant.identity) n.kingHolder = null;
+
           return n;
         });
       });
@@ -404,6 +434,12 @@ export default function Page() {
             turn: msg.data.turn ?? msg.data.host ?? null,
             lastDrawBy: msg.data.lastDrawBy ?? null,
             players: msg.data.players ?? {},
+
+            // backward-safe defaults
+            heavenHolder: msg.data.heavenHolder ?? null,
+            thumbHolder: msg.data.thumbHolder ?? null,
+            qmHolder: msg.data.qmHolder ?? null,
+            kingHolder: msg.data.kingHolder ?? null,
           };
           setState(incoming);
           return;
@@ -488,6 +524,11 @@ export default function Page() {
       turn: null,
       lastDrawBy: null,
       players: {},
+
+      heavenHolder: null,
+      thumbHolder: null,
+      qmHolder: null,
+      kingHolder: null,
     });
 
     setConnected(false);
@@ -511,11 +552,21 @@ export default function Page() {
     return filled.slice(0, 6);
   }, [orderedPlayers]);
 
-  // ✅ FIX: compute layout based on rendered slots (always 6), not connected players
-  const layout = computeVideoLayout(slotIds.length);
+  // ✅ REAL FIX: layout based on actual connected players (NOT always 6)
+  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
+  const layout = computeVideoLayout(effectiveCount);
 
   const ruleText = useMemo(() => ruleForCard(state.currentCard), [state.currentCard]);
   const turnLabel = state.turn || state.host || "—";
+
+  function badgeRowForPlayer(id: string) {
+    const b: string[] = [];
+    if (state.heavenHolder === id) b.push("☁️");
+    if (state.thumbHolder === id) b.push("👍");
+    if (state.qmHolder === id) b.push("❓");
+    if (state.kingHolder === id) b.push("👑");
+    return b.join(" ");
+  }
 
   function CardFace({ card }: { card: string | null }) {
     const { rank: rnk, suit: sut } = parseCard(card);
@@ -553,11 +604,51 @@ export default function Page() {
 
   return (
     <div className="appB">
+      {/* lightweight safety CSS so logo never becomes huge even if globals.css misses it */}
+      <style jsx global>{`
+        .logoImgB {
+          width: 40px;
+          height: 40px;
+          border-radius: 12px;
+          object-fit: cover;
+          border: 1px solid rgba(148, 163, 184, 0.18);
+          background: rgba(2, 6, 23, 0.35);
+          flex: 0 0 auto;
+        }
+        .fsBtnB {
+          border: 0;
+          border-radius: 14px;
+          padding: 8px 10px;
+          font-weight: 900;
+          color: rgba(226, 232, 240, 0.95);
+          background: rgba(148, 163, 184, 0.14);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .powerPillB {
+          position: absolute;
+          left: 10px;
+          top: 10px;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 1000;
+          background: rgba(2, 6, 23, 0.5);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          color: rgba(226, 232, 240, 0.95);
+          max-width: calc(100% - 20px);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+      `}</style>
+
       <div className="topbarB">
         <div className="brandB">
           <img className="logoImgB" src="/kylesadick-logo.png" alt="KylesADick logo" />
           <div style={{ minWidth: 0 }}>
-            <div className="titleB">KAD-KINGS</div>
+            <div className="titleOnlyB">KAD-KINGS</div>
           </div>
         </div>
 
@@ -638,6 +729,8 @@ export default function Page() {
                 }
 
                 const isMe = id === me.current;
+                const badges = badgeRowForPlayer(id);
+
                 return (
                   <div key={id} className="vTile" data-id={id}>
                     <video
@@ -648,6 +741,7 @@ export default function Page() {
                       // @ts-ignore
                       webkit-playsinline="true"
                     />
+                    {badges ? <div className="powerPillB">{badges}</div> : null}
                     <div className="vTag">{id}</div>
                   </div>
                 );
@@ -696,9 +790,14 @@ export default function Page() {
                 {orderedPlayers.map((id) => {
                   const p = state.players[id];
                   if (!p) return null;
+
+                  const badges = badgeRowForPlayer(id);
+
                   return (
                     <div key={p.name} className="pRowB">
-                      <div className="pNameB">{p.name}</div>
+                      <div className="pNameB">
+                        {p.name} {badges ? <span className="pBadgesB"> {badges}</span> : null}
+                      </div>
                       <div className="pMetaB">
                         🍺 {p.drinks} · 🃏 {p.cardsDrawn}
                       </div>
@@ -745,4 +844,4 @@ function AttachLocalOnConnect({
   }, [connected, me, roomRef, attachLocalTracks]);
 
   return null;
-       }
+  }

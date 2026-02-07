@@ -14,14 +14,22 @@ type PlayerStats = {
   cardsDrawn: number;
 };
 
-type WaterfallPhase = "idle" | "ready" | "running";
-
 type WaterfallState = {
-  phase: WaterfallPhase;
-  drawer: string | null; // the player who drew the Ace
-  durationSec: number; // random 5..20
-  startAtMs: number | null; // epoch ms (host time)
-  endAtMs: number | null; // epoch ms (host time)
+  status: "idle" | "pending" | "running" | "ended";
+  drawer: string | null;
+  seconds: number; // random 5-20 each Ace
+  startedAt: number | null;
+  endsAt: number | null;
+};
+
+type HeavenState = {
+  status: "idle" | "running" | "ended";
+  drawer: string | null; // who drew 7 (only they can start)
+  startedAt: number | null;
+  endsAt: number | null; // safety auto-end so it can't get stuck
+  participants: string[]; // snapshot at start
+  taps: string[]; // order of taps (first -> last)
+  loser: string | null; // last to react
 };
 
 type GameState = {
@@ -40,18 +48,28 @@ type GameState = {
   qmHolder: string | null; // Q
   kingHolder: string | null; // K
 
-  // ✅ Waterfall (Ace)
-  waterfall: WaterfallState;
-
-  // ✅ hard lock while waterfall is ready/running
+  // Locks / minis
   deckLocked: boolean;
+
+  // Power modes
+  waterfall: WaterfallState;
+  heaven: HeavenState;
 };
 
 type Msg =
   | { type: "STATE"; data: GameState }
   | { type: "DRAW"; requestedBy?: string }
   | { type: "UPDATE"; id: string; patch: Partial<PlayerStats> }
-  | { type: "WF_START_REQ"; requestedBy: string };
+  | {
+      type: "ACTION";
+      action:
+        | "WATERFALL_START"
+        | "WATERFALL_END"
+        | "HEAVEN_START"
+        | "HEAVEN_TAP"
+        | "HEAVEN_END";
+      by: string;
+    };
 
 /* =========================
    HELPERS
@@ -90,6 +108,14 @@ function decode(buf: Uint8Array) {
   }
 }
 
+function nowMs() {
+  return Date.now();
+}
+
+function randInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
 
 function computeVideoLayout(count: number): Layout {
@@ -118,7 +144,7 @@ function ruleForCard(card: string | null): string {
 
   switch (rank) {
     case "A":
-      return "Ace = Waterfall (drawer starts). Everyone starts together. Random 5–20s. Clockwise.";
+      return "Ace = Waterfall (drawer starts when ready).";
     case "2":
       return "2 = You choose someone to drink.";
     case "3":
@@ -130,7 +156,7 @@ function ruleForCard(card: string | null): string {
     case "6":
       return "6 = Dicks / Kyle’sADick (everyone drinks).";
     case "7":
-      return "7 = Heaven (☁️ holder; last loses).";
+      return "7 = Heaven (drawer starts; last to react drinks).";
     case "8":
       return "8 = Mate (one-way chain).";
     case "9":
@@ -138,44 +164,20 @@ function ruleForCard(card: string | null): string {
     case "10":
       return "10 = Categories (go around).";
     case "J":
-      return "Jack = Thumbmaster (👍 holder; last loses).";
+      return "Jack = Thumbmaster (power; last loses).";
     case "Q":
-      return "Queen = Question Master (❓ holder; gotcha).";
+      return "Queen = Question Master (gotcha).";
     case "K":
-      return "King = Make a rule (👑 holder; stays active).";
+      return "King = Make a rule (stays active).";
     default:
       return "House rules.";
   }
 }
 
-function randInt(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function makeDefaultState(): GameState {
-  return {
-    host: null,
-    deck: [],
-    currentCard: null,
-    turn: null,
-    lastDrawBy: null,
-    players: {},
-
-    heavenHolder: null,
-    thumbHolder: null,
-    qmHolder: null,
-    kingHolder: null,
-
-    waterfall: {
-      phase: "idle",
-      drawer: null,
-      durationSec: 0,
-      startAtMs: null,
-      endAtMs: null,
-    },
-
-    deckLocked: false,
-  };
+function msToSecondsLeft(endsAt: number | null) {
+  if (!endsAt) return 0;
+  const left = endsAt - nowMs();
+  return Math.max(0, Math.ceil(left / 1000));
 }
 
 /* =========================
@@ -211,7 +213,30 @@ export default function Page() {
   const roomRef = useRef<Room | null>(null);
   const me = useRef<string>("");
 
-  const stateRef = useRef<GameState>(makeDefaultState());
+  // host-only timers so rounds can end without server
+  const waterfallEndTimer = useRef<any>(null);
+  const heavenEndTimer = useRef<any>(null);
+
+  const initialState: GameState = {
+    host: null,
+    deck: [],
+    currentCard: null,
+    turn: null,
+    lastDrawBy: null,
+    players: {},
+
+    heavenHolder: null,
+    thumbHolder: null,
+    qmHolder: null,
+    kingHolder: null,
+
+    deckLocked: false,
+
+    waterfall: { status: "idle", drawer: null, seconds: 0, startedAt: null, endsAt: null },
+    heaven: { status: "idle", drawer: null, startedAt: null, endsAt: null, participants: [], taps: [], loser: null },
+  };
+
+  const stateRef = useRef<GameState>(clone(initialState));
 
   const [roomCode, setRoomCode] = useState("kad");
   const [name, setName] = useState("");
@@ -222,14 +247,19 @@ export default function Page() {
 
   const [isFs, setIsFs] = useState(false);
 
-  const [state, setState] = useState<GameState>(makeDefaultState());
+  const [state, setState] = useState<GameState>(clone(initialState));
 
-  // local ticking for countdown display (does not change state)
-  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  // tick so countdown labels update
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    const t = setInterval(() => setTick((x) => x + 1), 250);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     const onChange = () => setIsFs(isFullscreenNow());
@@ -253,12 +283,6 @@ export default function Page() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!connected) return;
-    const t = setInterval(() => setNowMs(Date.now()), 250);
-    return () => clearInterval(t);
-  }, [connected]);
-
   async function toggleFullscreen() {
     try {
       if (isFullscreenNow()) await exitFullscreenSafe();
@@ -280,17 +304,11 @@ export default function Page() {
     await r.localParticipant.publishData(encode(msg), { reliable: true });
   }
 
-  async function broadcastState(next: GameState) {
-    setState(next);
-    await send({ type: "STATE", data: next });
-  }
-
   /* =========================
      GAME LOGIC
   ========================= */
 
   function ensurePlayer(gs: GameState, id: string) {
-    if (!id) return;
     if (!gs.players[id]) {
       gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
     }
@@ -304,22 +322,179 @@ export default function Page() {
     return Array.from(new Set(merged)).slice(0, 6);
   }
 
-  function advanceTurnFrom(gs: GameState, fromId: string | null): string | null {
+  function advanceTurn(gs: GameState): string | null {
     const order = getTurnOrder(gs);
     if (!order.length) return gs.host;
 
-    const cur = fromId && order.includes(fromId) ? fromId : order[0];
+    const cur = gs.turn && order.includes(gs.turn) ? gs.turn : order[0];
     const idx = order.indexOf(cur);
     const next = order[(idx + 1) % order.length];
     return next || order[0] || gs.host;
   }
 
-  function isHostMe() {
+  function clearTimers() {
+    if (waterfallEndTimer.current) {
+      clearTimeout(waterfallEndTimer.current);
+      waterfallEndTimer.current = null;
+    }
+    if (heavenEndTimer.current) {
+      clearTimeout(heavenEndTimer.current);
+      heavenEndTimer.current = null;
+    }
+  }
+
+  function isHost() {
     return stateRef.current.host === me.current && !!me.current;
   }
 
-  function isDeckLocked(gs: GameState) {
-    return !!gs.deckLocked || gs.waterfall.phase !== "idle";
+  function hostBroadcast(next: GameState) {
+    setState(next);
+    send({ type: "STATE", data: next });
+  }
+
+  function currentRank() {
+    return parseCard(stateRef.current.currentCard).rank;
+  }
+
+  function canDrawerStartHeaven(gs: GameState) {
+    const r = parseCard(gs.currentCard).rank;
+    return r === "7" && gs.heaven.drawer && gs.heaven.drawer === me.current && gs.heaven.status !== "running";
+  }
+
+  function canDrawerStartWaterfall(gs: GameState) {
+    const r = parseCard(gs.currentCard).rank;
+    return r === "A" && gs.waterfall.drawer && gs.waterfall.drawer === me.current && gs.waterfall.status !== "running";
+  }
+
+  function scheduleWaterfallEnd(endsAt: number) {
+    if (!isHost()) return;
+    if (waterfallEndTimer.current) clearTimeout(waterfallEndTimer.current);
+    const delay = Math.max(0, endsAt - nowMs());
+    waterfallEndTimer.current = setTimeout(() => {
+      const gs = stateRef.current;
+      if (parseCard(gs.currentCard).rank !== "A") return;
+      if (gs.waterfall.status !== "running") return;
+      doWaterfallEnd(gs, "timer");
+    }, delay + 50);
+  }
+
+  function scheduleHeavenEnd(endsAt: number) {
+    if (!isHost()) return;
+    if (heavenEndTimer.current) clearTimeout(heavenEndTimer.current);
+    const delay = Math.max(0, endsAt - nowMs());
+    heavenEndTimer.current = setTimeout(() => {
+      const gs = stateRef.current;
+      if (parseCard(gs.currentCard).rank !== "7") return;
+      if (gs.heaven.status !== "running") return;
+      doHeavenEnd(gs, "timeout");
+    }, delay + 50);
+  }
+
+  function doWaterfallStart(gs: GameState) {
+    if (!isHost()) return;
+    const next = clone(gs);
+    if (parseCard(next.currentCard).rank !== "A") return;
+    if (next.waterfall.status === "running") return;
+
+    next.deckLocked = true;
+    next.waterfall.status = "running";
+    next.waterfall.startedAt = nowMs();
+    next.waterfall.endsAt = (next.waterfall.startedAt || nowMs()) + next.waterfall.seconds * 1000;
+
+    // stay on drawer until round is over
+    if (next.waterfall.drawer) next.turn = next.waterfall.drawer;
+
+    hostBroadcast(next);
+
+    if (next.waterfall.endsAt) scheduleWaterfallEnd(next.waterfall.endsAt);
+  }
+
+  function doWaterfallEnd(gs: GameState, _reason: "timer" | "host") {
+    if (!isHost()) return;
+    const next = clone(gs);
+    if (parseCard(next.currentCard).rank !== "A") return;
+    if (next.waterfall.status !== "running") return;
+
+    next.waterfall.status = "ended";
+    next.waterfall.endsAt = null;
+    next.deckLocked = false;
+
+    // AFTER round ends, advance turn
+    next.turn = advanceTurn(next);
+
+    hostBroadcast(next);
+  }
+
+  function doHeavenStart(gs: GameState) {
+    if (!isHost()) return;
+    const next = clone(gs);
+    if (parseCard(next.currentCard).rank !== "7") return;
+    if (next.heaven.status === "running") return;
+
+    // drawer can start whenever (while 7 is the current card)
+    if (!next.heaven.drawer) return;
+
+    const participants = getTurnOrder(next);
+    next.heaven.status = "running";
+    next.heaven.startedAt = nowMs();
+    next.heaven.endsAt = (next.heaven.startedAt || nowMs()) + 15000; // safety so it never gets stuck
+    next.heaven.participants = participants;
+    next.heaven.taps = [];
+    next.heaven.loser = null;
+
+    next.deckLocked = true;
+
+    // stay on drawer until round is over
+    next.turn = next.heaven.drawer;
+
+    hostBroadcast(next);
+
+    if (next.heaven.endsAt) scheduleHeavenEnd(next.heaven.endsAt);
+  }
+
+  function doHeavenTap(gs: GameState, who: string) {
+    if (!isHost()) return;
+    const next = clone(gs);
+    if (parseCard(next.currentCard).rank !== "7") return;
+    if (next.heaven.status !== "running") return;
+
+    // only count taps from participants snapshot
+    if (!next.heaven.participants.includes(who)) return;
+
+    if (!next.heaven.taps.includes(who)) next.heaven.taps.push(who);
+
+    hostBroadcast(next);
+
+    // if everyone tapped, end immediately
+    if (next.heaven.taps.length >= next.heaven.participants.length) {
+      doHeavenEnd(next, "allTapped");
+    }
+  }
+
+  function doHeavenEnd(gs: GameState, _reason: "allTapped" | "timeout" | "host") {
+    if (!isHost()) return;
+    const next = clone(gs);
+    if (parseCard(next.currentCard).rank !== "7") return;
+    if (next.heaven.status !== "running") return;
+
+    // loser = last tapper if all tapped, otherwise first missing (still counts as "last to react")
+    const participants = next.heaven.participants || [];
+    const taps = next.heaven.taps || [];
+
+    const missing = participants.filter((p) => !taps.includes(p));
+    const loser =
+      missing.length > 0 ? missing[missing.length - 1] : taps.length > 0 ? taps[taps.length - 1] : null;
+
+    next.heaven.status = "ended";
+    next.heaven.loser = loser;
+    next.heaven.endsAt = null;
+
+    next.deckLocked = false;
+
+    // AFTER round ends, advance turn
+    next.turn = advanceTurn(next);
+
+    hostBroadcast(next);
   }
 
   async function draw() {
@@ -328,8 +503,8 @@ export default function Page() {
 
     const current = stateRef.current;
 
-    // ✅ hard stop draw while locked
-    if (isDeckLocked(current)) return;
+    // lock: no drawing during power rounds
+    if (current.deckLocked) return;
 
     // host draws; guests request draw
     if (current.host !== me.current) {
@@ -339,9 +514,7 @@ export default function Page() {
 
     const next = clone(current);
 
-    if (!next.deck.length) {
-      next.deck = shuffle(buildDeck());
-    }
+    if (!next.deck.length) next.deck = shuffle(buildDeck());
 
     const card = next.deck.shift() || null;
     next.currentCard = card;
@@ -352,99 +525,43 @@ export default function Page() {
 
     const { rank } = parseCard(card);
 
-    // ✅ set badge holders
+    // default: unlock unless a power round sets it
+    next.deckLocked = false;
+
+    // reset power states when new card is drawn
+    next.waterfall = { status: "idle", drawer: null, seconds: 0, startedAt: null, endsAt: null };
+    next.heaven = { status: "idle", drawer: null, startedAt: null, endsAt: null, participants: [], taps: [], loser: null };
+
+    // badges (holders)
     if (rank === "7") next.heavenHolder = me.current;
     if (rank === "J") next.thumbHolder = me.current;
     if (rank === "Q") next.qmHolder = me.current;
     if (rank === "K") next.kingHolder = me.current;
 
-    // ✅ ACE: enter Waterfall READY, lock deck, do NOT advance turn
+    // POWER SETUP
     if (rank === "A") {
-      const dur = randInt(5, 20);
-      next.waterfall = {
-        phase: "ready",
-        drawer: me.current,
-        durationSec: dur,
-        startAtMs: null,
-        endAtMs: null,
-      };
-      next.deckLocked = true;
-      next.turn = me.current; // stay on drawer until finished
-      await broadcastState(next);
-      return;
+      // Ace creates a pending waterfall with random timer (drawer controls start)
+      const seconds = randInt(5, 20);
+      next.waterfall = { status: "pending", drawer: me.current, seconds, startedAt: null, endsAt: null };
+      next.deckLocked = true; // no drawing while waiting
+      next.turn = me.current; // stay on drawer until done
     }
 
-    // normal: advance turn after draw
-    next.turn = advanceTurnFrom(next, me.current);
+    if (rank === "7") {
+      // Heaven is not auto-started; drawer can start whenever while 7 is current card
+      next.heaven = { status: "idle", drawer: me.current, startedAt: null, endsAt: null, participants: [], taps: [], loser: null };
+      next.deckLocked = true; // no drawing until Heaven ends
+      next.turn = me.current; // stay on drawer until done
+    }
 
-    await broadcastState(next);
+    // if not a lock card, advance turn normally after draw
+    if (!next.deckLocked) {
+      next.turn = advanceTurn(next);
+    }
+
+    setState(next);
+    await send({ type: "STATE", data: next });
   }
-
-  // ✅ drawer (Ace) starts waterfall (HOST authoritative)
-  async function startWaterfall() {
-    const current = stateRef.current;
-    if (!current.currentCard) return;
-    const { rank } = parseCard(current.currentCard);
-    if (rank !== "A") return;
-
-    // only drawer can start
-    if (current.waterfall.drawer !== me.current) return;
-
-    if (!isHostMe()) {
-      // drawer might not be host in future versions; for now host controls state
-      // request host to start
-      await send({ type: "WF_START_REQ", requestedBy: me.current });
-      return;
-    }
-
-    if (current.waterfall.phase !== "ready") return;
-
-    const next = clone(current);
-    const startAt = Date.now();
-    const endAt = startAt + next.waterfall.durationSec * 1000;
-
-    next.waterfall.phase = "running";
-    next.waterfall.startAtMs = startAt;
-    next.waterfall.endAtMs = endAt;
-
-    // still locked during running
-    next.deckLocked = true;
-    next.turn = next.waterfall.drawer; // stay on drawer
-
-    await broadcastState(next);
-  }
-
-  // ✅ host checks for waterfall end and unlocks + advances turn
-  useEffect(() => {
-    if (!connected) return;
-    if (!isHostMe()) return;
-
-    const current = stateRef.current;
-    if (current.waterfall.phase !== "running") return;
-    if (!current.waterfall.endAtMs) return;
-
-    if (Date.now() >= current.waterfall.endAtMs) {
-      const next = clone(current);
-
-      const drawer = next.waterfall.drawer;
-      next.waterfall = {
-        phase: "idle",
-        drawer: null,
-        durationSec: 0,
-        startAtMs: null,
-        endAtMs: null,
-      };
-
-      // unlock deck
-      next.deckLocked = false;
-
-      // ✅ now the turn advances AFTER waterfall completes
-      next.turn = advanceTurnFrom(next, drawer);
-
-      // broadcast
-      broadcastState(next).catch(() => {});
-    }
-  }, [nowMs, connected]);
 
   async function changeDrink(n: number) {
     const current = stateRef.current;
@@ -460,6 +577,46 @@ export default function Page() {
       id: me.current,
       patch: { drinks: next.players[me.current].drinks },
     });
+  }
+
+  async function drawerStartWaterfall() {
+    const gs = stateRef.current;
+    if (parseCard(gs.currentCard).rank !== "A") return;
+    if (!canDrawerStartWaterfall(gs)) return;
+
+    // only host mutates state; drawer requests if not host
+    if (!isHost()) {
+      await send({ type: "ACTION", action: "WATERFALL_START", by: me.current });
+      return;
+    }
+
+    doWaterfallStart(gs);
+  }
+
+  async function drawerStartHeaven() {
+    const gs = stateRef.current;
+    if (parseCard(gs.currentCard).rank !== "7") return;
+    if (!canDrawerStartHeaven(gs)) return;
+
+    if (!isHost()) {
+      await send({ type: "ACTION", action: "HEAVEN_START", by: me.current });
+      return;
+    }
+
+    doHeavenStart(gs);
+  }
+
+  async function heavenTap() {
+    const gs = stateRef.current;
+    if (parseCard(gs.currentCard).rank !== "7") return;
+    if (gs.heaven.status !== "running") return;
+
+    if (!isHost()) {
+      await send({ type: "ACTION", action: "HEAVEN_TAP", by: me.current });
+      return;
+    }
+
+    doHeavenTap(gs, me.current);
   }
 
   /* =========================
@@ -543,8 +700,7 @@ export default function Page() {
           const n = clone(s);
           if (n.players[participant.identity]) delete n.players[participant.identity];
 
-          // if turn holder left, advance
-          if (n.turn === participant.identity) n.turn = advanceTurnFrom(n, participant.identity);
+          if (n.turn === participant.identity) n.turn = advanceTurn(n);
 
           // if a holder leaves, clear holder
           if (n.heavenHolder === participant.identity) n.heavenHolder = null;
@@ -552,10 +708,10 @@ export default function Page() {
           if (n.qmHolder === participant.identity) n.qmHolder = null;
           if (n.kingHolder === participant.identity) n.kingHolder = null;
 
-          // if waterfall drawer left, cancel waterfall + unlock
-          if (n.waterfall.drawer === participant.identity) {
-            n.waterfall = { phase: "idle", drawer: null, durationSec: 0, startAtMs: null, endAtMs: null };
-            n.deckLocked = false;
+          // if running heaven, remove from participants/taps (host will still decide end)
+          if (n.heaven.status === "running") {
+            n.heaven.participants = (n.heaven.participants || []).filter((p) => p !== participant.identity);
+            n.heaven.taps = (n.heaven.taps || []).filter((p) => p !== participant.identity);
           }
 
           return n;
@@ -567,16 +723,35 @@ export default function Page() {
         if (!msg) return;
 
         if (msg.type === "STATE") {
-          const incomingRaw = msg.data ?? {};
           const incoming: GameState = {
-            ...makeDefaultState(),
-            ...incomingRaw,
-            waterfall: {
-              ...makeDefaultState().waterfall,
-              ...(incomingRaw.waterfall ?? {}),
-            },
+            host: msg.data.host ?? null,
+            deck: msg.data.deck ?? [],
+            currentCard: msg.data.currentCard ?? null,
+            turn: msg.data.turn ?? msg.data.host ?? null,
+            lastDrawBy: msg.data.lastDrawBy ?? null,
+            players: msg.data.players ?? {},
+
+            heavenHolder: msg.data.heavenHolder ?? null,
+            thumbHolder: msg.data.thumbHolder ?? null,
+            qmHolder: msg.data.qmHolder ?? null,
+            kingHolder: msg.data.kingHolder ?? null,
+
+            deckLocked: msg.data.deckLocked ?? false,
+
+            waterfall: msg.data.waterfall ?? { status: "idle", drawer: null, seconds: 0, startedAt: null, endsAt: null },
+            heaven:
+              msg.data.heaven ??
+              ({ status: "idle", drawer: null, startedAt: null, endsAt: null, participants: [], taps: [], loser: null } as HeavenState),
           };
+
           setState(incoming);
+
+          // if I'm host and see a running round with endsAt, schedule local timer
+          if (incoming.host === me.current) {
+            if (incoming.waterfall.status === "running" && incoming.waterfall.endsAt) scheduleWaterfallEnd(incoming.waterfall.endsAt);
+            if (incoming.heaven.status === "running" && incoming.heaven.endsAt) scheduleHeavenEnd(incoming.heaven.endsAt);
+          }
+
           return;
         }
 
@@ -588,22 +763,6 @@ export default function Page() {
           return;
         }
 
-        if (msg.type === "WF_START_REQ") {
-          const current = stateRef.current;
-          if (roomRef.current && me.current && current.host === me.current) {
-            // host only
-            // only accept if requester is current drawer and we are in ready phase
-            if (
-              current.waterfall.phase === "ready" &&
-              current.waterfall.drawer &&
-              msg.requestedBy === current.waterfall.drawer
-            ) {
-              startWaterfall();
-            }
-          }
-          return;
-        }
-
         if (msg.type === "UPDATE") {
           setState((s) => {
             const n = clone(s);
@@ -611,6 +770,45 @@ export default function Page() {
             Object.assign(n.players[msg.id], msg.patch);
             return n;
           });
+          return;
+        }
+
+        if (msg.type === "ACTION") {
+          const gs = stateRef.current;
+          // only host applies actions
+          if (!isHost()) return;
+
+          if (msg.action === "WATERFALL_START") {
+            // only drawer can start
+            if (gs.waterfall.drawer && msg.by === gs.waterfall.drawer && parseCard(gs.currentCard).rank === "A") {
+              doWaterfallStart(gs);
+            }
+            return;
+          }
+
+          if (msg.action === "HEAVEN_START") {
+            if (gs.heaven.drawer && msg.by === gs.heaven.drawer && parseCard(gs.currentCard).rank === "7") {
+              doHeavenStart(gs);
+            }
+            return;
+          }
+
+          if (msg.action === "HEAVEN_TAP") {
+            doHeavenTap(gs, msg.by);
+            return;
+          }
+
+          if (msg.action === "HEAVEN_END") {
+            doHeavenEnd(gs, "host");
+            return;
+          }
+
+          if (msg.action === "WATERFALL_END") {
+            doWaterfallEnd(gs, "host");
+            return;
+          }
+
+          return;
         }
       });
 
@@ -638,7 +836,6 @@ export default function Page() {
       setState(next);
       await send({ type: "STATE", data: next });
 
-      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
@@ -662,6 +859,8 @@ export default function Page() {
 
   function disconnect() {
     setErrMsg("");
+    clearTimers();
+
     const r = roomRef.current;
     if (r) {
       try {
@@ -670,7 +869,7 @@ export default function Page() {
     }
     roomRef.current = null;
 
-    setState(makeDefaultState());
+    setState(clone(initialState));
     setConnected(false);
   }
 
@@ -697,6 +896,8 @@ export default function Page() {
 
   const ruleText = useMemo(() => ruleForCard(state.currentCard), [state.currentCard]);
   const turnLabel = state.turn || state.host || "—";
+
+  const deckCountLabel = state.deck.length;
 
   function badgeRowForPlayer(id: string) {
     const b: string[] = [];
@@ -741,25 +942,31 @@ export default function Page() {
     );
   }
 
-  const wf = state.waterfall;
-  const wfActive = wf.phase !== "idle";
-  const wfIsAce = parseCard(state.currentCard).rank === "A";
-  const wfRemainingSec = useMemo(() => {
-    if (wf.phase !== "running" || !wf.endAtMs) return null;
-    const remain = Math.ceil((wf.endAtMs - nowMs) / 1000);
-    return Math.max(0, remain);
-  }, [wf.phase, wf.endAtMs, nowMs]);
+  const isDeckLocked = state.deckLocked;
 
-  const deckIsLocked = isDeckLocked(state);
+  const showWaterfallPanel = parseCard(state.currentCard).rank === "A";
+  const showHeavenPanel = parseCard(state.currentCard).rank === "7";
 
-  const canStartWaterfall =
-    wfIsAce && wf.phase === "ready" && wf.drawer === me.current && (isHostMe() || true);
+  const wfSecondsLeft = msToSecondsLeft(state.waterfall.endsAt);
+  const hvSecondsLeft = msToSecondsLeft(state.heaven.endsAt);
 
-  const drawerName = wf.drawer || "—";
+  const canStartWaterfall = showWaterfallPanel && canDrawerStartWaterfall(state);
+  const canStartHeaven = showHeavenPanel && canDrawerStartHeaven(state);
+
+  const heavenIsRunning = showHeavenPanel && state.heaven.status === "running";
+  const heavenTapDisabled =
+    !heavenIsRunning ||
+    !state.heaven.participants.includes(me.current) ||
+    state.heaven.taps.includes(me.current);
+
+  const heavenTapLabel = heavenTapDisabled
+    ? state.heaven.taps.includes(me.current)
+      ? "TAPPED"
+      : "WAITING"
+    : "TAP (HEAVEN)";
 
   return (
     <div className="appB">
-      {/* Safety CSS + turn highlight */}
       <style jsx global>{`
         .logoImgB {
           width: 40px;
@@ -798,11 +1005,12 @@ export default function Page() {
           white-space: nowrap;
         }
         .turnGlowB {
-          box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.35), 0 0 0 6px rgba(34, 197, 94, 0.12);
-          border-color: rgba(34, 197, 94, 0.35) !important;
+          outline: 2px solid rgba(34, 197, 94, 0.28);
+          outline-offset: -2px;
+          box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.08);
         }
-        .deckLockedPillB {
-          padding: 6px 10px;
+        .lockPillB {
+          padding: 8px 10px;
           border-radius: 999px;
           font-size: 12px;
           font-weight: 1000;
@@ -811,22 +1019,44 @@ export default function Page() {
           opacity: 0.95;
           white-space: nowrap;
         }
-        .wfBtnB {
+        .powerPanelB {
+          margin-top: 10px;
+          border-radius: 16px;
+          border: 1px solid rgba(148, 163, 184, 0.14);
+          background: rgba(2, 6, 23, 0.18);
+          padding: 10px;
+          display: grid;
+          gap: 10px;
+        }
+        .powerLineB {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          font-weight: 1000;
+          font-size: 12px;
+          opacity: 0.95;
+        }
+        .powerBtnB {
           width: 100%;
           border: 0;
           border-radius: 18px;
-          padding: 14px 12px;
+          padding: 16px 14px;
           font-weight: 1100;
-          font-size: 16px;
-          letter-spacing: 0.06em;
+          font-size: 18px;
+          letter-spacing: 0.08em;
           color: rgba(226, 232, 240, 0.95);
           background: linear-gradient(180deg, rgba(34, 197, 94, 0.24), rgba(2, 6, 23, 0.35));
           border: 1px solid rgba(34, 197, 94, 0.22);
           cursor: pointer;
         }
-        .wfBtnB:disabled {
-          opacity: 0.6;
+        .powerBtnB:disabled {
+          opacity: 0.55;
           cursor: default;
+        }
+        .dangerBtnB {
+          background: linear-gradient(180deg, rgba(248, 113, 113, 0.28), rgba(2, 6, 23, 0.35));
+          border: 1px solid rgba(248, 113, 113, 0.22);
         }
       `}</style>
 
@@ -916,7 +1146,7 @@ export default function Page() {
 
                 const isMe = id === me.current;
                 const badges = badgeRowForPlayer(id);
-                const isTurn = id === state.turn;
+                const isTurn = id === turnLabel;
 
                 return (
                   <div key={id} className={`vTile ${isTurn ? "turnGlowB" : ""}`} data-id={id}>
@@ -938,7 +1168,7 @@ export default function Page() {
 
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
-              <button className="drawComboB" onClick={draw} disabled={deckIsLocked}>
+              <button className="drawComboB" onClick={draw} disabled={isDeckLocked}>
                 <div className="cardSquareB">
                   <CardFace card={state.currentCard} />
                 </div>
@@ -947,42 +1177,71 @@ export default function Page() {
                   <div className="drawTitleB">TURN</div>
                   <div className="turnLineB">{turnLabel}</div>
                   <div className="ruleLineB">{ruleText}</div>
-
-                  {wfActive ? (
-                    <div className="tapLineB">Deck locked</div>
-                  ) : (
-                    <div className="tapLineB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
-                  )}
+                  <div className="tapLineB">
+                    {isDeckLocked
+                      ? "Deck locked"
+                      : state.host === me.current
+                      ? "Tap to draw"
+                      : "Tap to request draw"}
+                  </div>
                 </div>
 
                 <div className="drawMetaB">
-                  <div className="metaPillB">🃏 {state.deck.length}</div>
+                  <div className="metaPillB">🃏 {deckCountLabel}</div>
                   <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
                 </div>
               </button>
 
-              {/* ✅ Waterfall controls live inside the deck card area */}
-              {wfIsAce && wf.phase !== "idle" ? (
-                <div style={{ display: "grid", gap: 10 }}>
-                  <div className="deckLockedPillB">
-                    {wf.phase === "ready" ? (
-                      <>
-                        WATERFALL READY · {wf.durationSec}s (random) · Drawer: <b>{drawerName}</b>
-                      </>
-                    ) : (
-                      <>
-                        WATERFALL RUNNING · Remaining: <b>{wfRemainingSec ?? "—"}s</b> · Clockwise
-                      </>
-                    )}
+              {/* POWER: ACE (drawer starts) */}
+              {showWaterfallPanel ? (
+                <div className="powerPanelB">
+                  <div className="powerLineB">
+                    <div>
+                      WATERFALL · {state.waterfall.seconds ? `${state.waterfall.seconds}s` : "—"} (random)
+                    </div>
+                    <div className="lockPillB">{state.waterfall.status === "running" ? `⏳ ${wfSecondsLeft}s` : "🔒"}</div>
                   </div>
 
-                  <div className="deckLockedPillB" style={{ opacity: 0.85 }}>
-                    Deck locked
+                  <div className="noteB" style={{ opacity: 0.85, fontWeight: 900 }}>
+                    Drawer starts when ready. No draws until it ends. Direction clockwise.
                   </div>
 
-                  <button className="wfBtnB" onClick={startWaterfall} disabled={!canStartWaterfall || wf.phase !== "ready"}>
-                    {wf.drawer === me.current ? "READY / START WATERFALL" : "WAITING FOR DRAWER"}
+                  <button className="powerBtnB" onClick={drawerStartWaterfall} disabled={!canStartWaterfall}>
+                    READY / START WATERFALL
                   </button>
+                </div>
+              ) : null}
+
+              {/* POWER: HEAVEN (drawer starts; last to react drinks) */}
+              {showHeavenPanel ? (
+                <div className="powerPanelB">
+                  <div className="powerLineB">
+                    <div>HEAVEN</div>
+                    <div className="lockPillB">
+                      {state.heaven.status === "running" ? `⏳ ${hvSecondsLeft}s` : "🔒"}
+                    </div>
+                  </div>
+
+                  <div className="noteB" style={{ opacity: 0.85, fontWeight: 900 }}>
+                    Drawer can start whenever. Everyone taps once. Last to react drinks.
+                    {state.heaven.loser ? ` Loser: ${state.heaven.loser}` : ""}
+                  </div>
+
+                  {state.heaven.status !== "running" ? (
+                    <button className="powerBtnB" onClick={drawerStartHeaven} disabled={!canStartHeaven}>
+                      START HEAVEN
+                    </button>
+                  ) : (
+                    <button className="powerBtnB dangerBtnB" onClick={heavenTap} disabled={heavenTapDisabled}>
+                      {heavenTapLabel}
+                    </button>
+                  )}
+
+                  {state.heaven.status === "running" ? (
+                    <div className="noteB" style={{ opacity: 0.85, fontWeight: 900 }}>
+                      Taps: {state.heaven.taps.length}/{state.heaven.participants.length}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -1009,10 +1268,9 @@ export default function Page() {
                   if (!p) return null;
 
                   const badges = badgeRowForPlayer(id);
-                  const isTurn = id === state.turn;
 
                   return (
-                    <div key={p.name} className="pRowB" style={isTurn ? { outline: "2px solid rgba(34,197,94,0.22)", outlineOffset: "-2px" } : undefined}>
+                    <div key={p.name} className="pRowB">
                       <div className="pNameB">
                         {p.name} {badges ? <span className="pBadgesB"> {badges}</span> : null}
                       </div>

@@ -67,23 +67,6 @@ input {
   opacity: 0.95;
 }
 
-.topActionsB {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.iconBtnB {
-  width: 38px;
-  height: 38px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(2, 6, 23, 0.35);
-  color: rgba(226, 232, 240, 0.95);
-  font-weight: 1000;
-  cursor: pointer;
-}
-
 .shellB {
   display: grid;
   grid-template-rows: 1fr auto;
@@ -184,7 +167,7 @@ input {
 
 .videoCardB {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto auto 1fr;
   gap: 10px;
   min-height: 0;
 }
@@ -213,13 +196,32 @@ input {
   opacity: 0.95;
 }
 
+/* ✅ Pick mode hint row + cancel */
+.pickHintRowB {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .pickHintB {
+  flex: 1 1 auto;
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(34, 197, 94, 0.22);
   background: rgba(34, 197, 94, 0.1);
   font-weight: 1000;
   font-size: 12px;
+}
+
+.pickCancelB {
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.22);
+  color: rgba(226, 232, 240, 0.95);
+  font-weight: 1000;
+  cursor: pointer;
 }
 
 .videoGridB {
@@ -417,7 +419,6 @@ input {
   white-space: nowrap;
 }
 
-/* Power buttons */
 .powerRowB {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -445,7 +446,6 @@ input {
   cursor: default;
 }
 
-/* Stats */
 .statsMiniB {
   display: grid;
   grid-template-rows: auto auto 1fr;
@@ -523,7 +523,6 @@ input {
   opacity: 0.85;
 }
 
-/* Rules box */
 .rulesBoxB {
   border-radius: 16px;
   border: 1px solid rgba(148, 163, 184, 0.14);
@@ -588,7 +587,6 @@ input {
   cursor: pointer;
 }
 
-/* Overlay */
 .overlayB {
   position: fixed;
   inset: 0;
@@ -647,12 +645,11 @@ input {
   font-weight: 900;
 }
 
-/* Rules modal */
 .rulesModalB {
   width: min(460px, 100%);
   border-radius: 22px;
   border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.90);
+  background: rgba(15, 23, 42, 0.9);
   padding: 14px;
   display: grid;
   gap: 12px;
@@ -705,4 +702,4 @@ input {
   .rulesGridB {
     grid-template-columns: 1fr;
   }
-  }
+}

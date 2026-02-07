@@ -14,6 +14,13 @@ type PlayerStats = {
   cardsDrawn: number;
 };
 
+type WaterfallState = {
+  status: "armed" | "running";
+  drawerId: string;
+  durationSec: number; // random 5..20 each Ace
+  endsAt: number | null; // ms epoch when running
+};
+
 type GameState = {
   host: string | null;
   deck: string[];
@@ -29,12 +36,16 @@ type GameState = {
   thumbHolder: string | null; // J
   qmHolder: string | null; // Q
   kingHolder: string | null; // K
+
+  // ✅ ACE: Waterfall lock
+  waterfall: WaterfallState | null;
 };
 
 type Msg =
   | { type: "STATE"; data: GameState }
   | { type: "DRAW"; requestedBy?: string }
-  | { type: "UPDATE"; id: string; patch: Partial<PlayerStats> };
+  | { type: "UPDATE"; id: string; patch: Partial<PlayerStats> }
+  | { type: "WF_START"; requestedBy: string }; // drawer presses READY/START
 
 /* =========================
    HELPERS
@@ -95,13 +106,17 @@ function isRedSuit(suit: string) {
   return suit === "♥" || suit === "♦";
 }
 
+function randInt(minInclusive: number, maxInclusive: number) {
+  return Math.floor(Math.random() * (maxInclusive - minInclusive + 1)) + minInclusive;
+}
+
 function ruleForCard(card: string | null): string {
   if (!card) return "Draw to start.";
   const { rank } = parseCard(card);
 
   switch (rank) {
     case "A":
-      return "Ace = Waterfall (optional timer/ready-check later).";
+      return "Ace = Waterfall (drawer starts when ready; random timer).";
     case "2":
       return "2 = You choose someone to drink.";
     case "3":
@@ -176,6 +191,8 @@ export default function Page() {
     thumbHolder: null,
     qmHolder: null,
     kingHolder: null,
+
+    waterfall: null,
   });
 
   const [roomCode, setRoomCode] = useState("kad");
@@ -199,6 +216,8 @@ export default function Page() {
     thumbHolder: null,
     qmHolder: null,
     kingHolder: null,
+
+    waterfall: null,
   });
 
   useEffect(() => {
@@ -276,11 +295,30 @@ export default function Page() {
     return next || order[0] || gs.host;
   }
 
+  function isDeckLocked(gs: GameState) {
+    return !!gs.waterfall; // later: add more locks here if needed
+  }
+
+  async function startWaterfallByDrawer() {
+    const current = stateRef.current;
+    if (!current.waterfall) return;
+    if (current.waterfall.status !== "armed") return;
+
+    // drawer asks host to start
+    const drawerId = current.waterfall.drawerId;
+    if (me.current !== drawerId) return;
+
+    await send({ type: "WF_START", requestedBy: me.current });
+  }
+
   async function draw() {
     const r = roomRef.current;
     if (!r) return;
 
     const current = stateRef.current;
+
+    // ✅ lock: no draws during waterfall
+    if (isDeckLocked(current)) return;
 
     // host draws; guests request draw
     if (current.host !== me.current) {
@@ -301,14 +339,28 @@ export default function Page() {
     next.players[me.current].cardsDrawn++;
     next.lastDrawBy = me.current;
 
-    // ✅ set power holders based on card (for badges)
     const { rank } = parseCard(card);
+
+    // ✅ set power holders based on card (for badges)
     if (rank === "7") next.heavenHolder = me.current;
     if (rank === "J") next.thumbHolder = me.current;
     if (rank === "Q") next.qmHolder = me.current;
     if (rank === "K") next.kingHolder = me.current;
 
-    next.turn = advanceTurn(next);
+    // ✅ ACE: arm waterfall, freeze turn on drawer, lock deck, random timer 5..20
+    if (rank === "A") {
+      const dur = randInt(5, 20);
+      next.waterfall = {
+        status: "armed",
+        drawerId: me.current,
+        durationSec: dur,
+        endsAt: null,
+      };
+      // stay on drawer until waterfall finishes
+      next.turn = me.current;
+    } else {
+      next.turn = advanceTurn(next);
+    }
 
     setState(next);
     await send({ type: "STATE", data: next });
@@ -329,6 +381,52 @@ export default function Page() {
       patch: { drinks: next.players[me.current].drinks },
     });
   }
+
+  /* =========================
+     WATERFALL: host timer / completion
+  ========================= */
+
+  useEffect(() => {
+    if (!connected) return;
+
+    const current = stateRef.current;
+    if (!current) return;
+
+    // host authority
+    if (current.host !== me.current) return;
+
+    const wf = current.waterfall;
+    if (!wf || wf.status !== "running" || !wf.endsAt) return;
+
+    const msLeft = wf.endsAt - Date.now();
+    if (msLeft <= 0) {
+      // finish immediately if overdue
+      const next = clone(current);
+      next.waterfall = null;
+      next.turn = advanceTurn(next);
+      setState(next);
+      send({ type: "STATE", data: next }).catch(() => {});
+      return;
+    }
+
+    const t = setTimeout(() => {
+      const latest = stateRef.current;
+      if (!latest || latest.host !== me.current) return;
+      const latestWf = latest.waterfall;
+      if (!latestWf || latestWf.status !== "running" || !latestWf.endsAt) return;
+
+      if (Date.now() >= latestWf.endsAt) {
+        const next = clone(latest);
+        next.waterfall = null;
+        next.turn = advanceTurn(next);
+        setState(next);
+        send({ type: "STATE", data: next }).catch(() => {});
+      }
+    }, Math.min(msLeft, 1200)); // keep it responsive-ish without spamming
+
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, state.waterfall?.status, state.waterfall?.endsAt, state.host]);
 
   /* =========================
      VIDEO ATTACHMENT
@@ -372,9 +470,7 @@ export default function Page() {
     setJoining(true);
 
     try {
-      const res = await fetch(
-        `/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`
-      );
+      const res = await fetch(`/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`);
       const data = await res.json();
 
       if (!res.ok) throw new Error(data?.error || `Token API failed (${res.status})`);
@@ -410,6 +506,7 @@ export default function Page() {
         setState((s) => {
           const n = clone(s);
           if (n.players[participant.identity]) delete n.players[participant.identity];
+
           if (n.turn === participant.identity) n.turn = advanceTurn(n);
 
           // if a holder leaves, clear holder
@@ -417,6 +514,13 @@ export default function Page() {
           if (n.thumbHolder === participant.identity) n.thumbHolder = null;
           if (n.qmHolder === participant.identity) n.qmHolder = null;
           if (n.kingHolder === participant.identity) n.kingHolder = null;
+
+          // if waterfall drawer leaves, cancel waterfall (unlock)
+          if (n.waterfall?.drawerId === participant.identity) {
+            n.waterfall = null;
+            // keep turn sane
+            if (!n.turn) n.turn = n.host;
+          }
 
           return n;
         });
@@ -435,11 +539,12 @@ export default function Page() {
             lastDrawBy: msg.data.lastDrawBy ?? null,
             players: msg.data.players ?? {},
 
-            // backward-safe defaults
             heavenHolder: msg.data.heavenHolder ?? null,
             thumbHolder: msg.data.thumbHolder ?? null,
             qmHolder: msg.data.qmHolder ?? null,
             kingHolder: msg.data.kingHolder ?? null,
+
+            waterfall: msg.data.waterfall ?? null,
           };
           setState(incoming);
           return;
@@ -447,9 +552,38 @@ export default function Page() {
 
         if (msg.type === "DRAW") {
           const current = stateRef.current;
+
+          // ✅ host ignores draw requests while locked
+          if (current && isDeckLocked(current)) return;
+
           if (roomRef.current && me.current && current.host === me.current) {
             draw();
           }
+          return;
+        }
+
+        if (msg.type === "WF_START") {
+          const current = stateRef.current;
+
+          // host-only authority
+          if (!current || current.host !== me.current) return;
+
+          // must be armed and requested by drawer
+          const wf = current.waterfall;
+          if (!wf || wf.status !== "armed") return;
+          if (msg.requestedBy !== wf.drawerId) return;
+
+          const next = clone(current);
+          next.waterfall = {
+            ...wf,
+            status: "running",
+            endsAt: Date.now() + wf.durationSec * 1000,
+          };
+          // stay on drawer while running
+          next.turn = wf.drawerId;
+
+          setState(next);
+          send({ type: "STATE", data: next }).catch(() => {});
           return;
         }
 
@@ -529,6 +663,8 @@ export default function Page() {
       thumbHolder: null,
       qmHolder: null,
       kingHolder: null,
+
+      waterfall: null,
     });
 
     setConnected(false);
@@ -552,7 +688,6 @@ export default function Page() {
     return filled.slice(0, 6);
   }, [orderedPlayers]);
 
-  // ✅ REAL FIX: layout based on actual connected players (NOT always 6)
   const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
   const layout = computeVideoLayout(effectiveCount);
 
@@ -602,6 +737,21 @@ export default function Page() {
     );
   }
 
+  const wf = state.waterfall;
+  const deckLocked = isDeckLocked(state);
+
+  const wfLine = useMemo(() => {
+    if (!wf) return null;
+    if (wf.status === "armed") return `WATERFALL READY · ${wf.durationSec}s (random)`;
+    if (wf.status === "running" && wf.endsAt) {
+      const sLeft = Math.max(0, Math.ceil((wf.endsAt - Date.now()) / 1000));
+      return `WATERFALL RUNNING · ${sLeft}s left`;
+    }
+    return "WATERFALL";
+  }, [wf, state.waterfall?.status, state.waterfall?.endsAt]);
+
+  const canStartWf = !!wf && wf.status === "armed" && wf.drawerId === me.current && state.host !== null;
+
   return (
     <div className="appB">
       {/* lightweight safety CSS so logo never becomes huge even if globals.css misses it */}
@@ -640,6 +790,40 @@ export default function Page() {
           max-width: calc(100% - 20px);
           overflow: hidden;
           text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        /* ✅ Current turn highlight */
+        .vTile.turnActiveB {
+          outline: 3px solid rgba(34, 197, 94, 0.35);
+          outline-offset: -2px;
+          box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.10);
+        }
+
+        /* ✅ Waterfall button */
+        .wfBtnB {
+          margin-top: 8px;
+          width: 100%;
+          border: 0;
+          border-radius: 14px;
+          padding: 10px 12px;
+          font-weight: 1000;
+          letter-spacing: 0.06em;
+          color: rgba(226, 232, 240, 0.95);
+          background: linear-gradient(180deg, rgba(34, 197, 94, 0.30), rgba(2, 6, 23, 0.30));
+          border: 1px solid rgba(34, 197, 94, 0.24);
+          cursor: pointer;
+        }
+        .wfPillB {
+          margin-top: 6px;
+          display: inline-flex;
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 1000;
+          background: rgba(2, 6, 23, 0.30);
+          border: 1px solid rgba(148, 163, 184, 0.16);
+          opacity: 0.95;
           white-space: nowrap;
         }
       `}</style>
@@ -730,9 +914,10 @@ export default function Page() {
 
                 const isMe = id === me.current;
                 const badges = badgeRowForPlayer(id);
+                const isTurn = id === (state.turn || "");
 
                 return (
-                  <div key={id} className="vTile" data-id={id}>
+                  <div key={id} className={`vTile ${isTurn ? "turnActiveB" : ""}`} data-id={id}>
                     <video
                       data-video-for={id}
                       autoPlay
@@ -751,7 +936,7 @@ export default function Page() {
 
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
-              <button className="drawComboB" onClick={draw}>
+              <button className="drawComboB" onClick={draw} disabled={deckLocked} title={deckLocked ? "Locked" : ""}>
                 <div className="cardSquareB">
                   <CardFace card={state.currentCard} />
                 </div>
@@ -760,7 +945,20 @@ export default function Page() {
                   <div className="drawTitleB">TURN</div>
                   <div className="turnLineB">{turnLabel}</div>
                   <div className="ruleLineB">{ruleText}</div>
-                  <div className="tapLineB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
+
+                  {wfLine ? <div className="wfPillB">{wfLine}</div> : null}
+
+                  {!deckLocked ? (
+                    <div className="tapLineB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
+                  ) : (
+                    <div className="tapLineB">Deck locked</div>
+                  )}
+
+                  {canStartWf ? (
+                    <button className="wfBtnB" onClick={startWaterfallByDrawer} type="button">
+                      READY / START WATERFALL
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="drawMetaB">
@@ -844,4 +1042,4 @@ function AttachLocalOnConnect({
   }, [connected, me, roomRef, attachLocalTracks]);
 
   return null;
-  }
+}

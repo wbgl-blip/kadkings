@@ -45,6 +45,24 @@ input {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+}
+
+/* ✅ NEW: real logo image sizing (THIS is what was missing) */
+.logoImgB {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.35);
+  flex: 0 0 auto;
+}
+
+/* ✅ Safety clamp so images can NEVER explode the header again */
+.topbarB img {
+  max-width: 40px;
+  max-height: 40px;
 }
 
 .logoB {
@@ -702,4 +720,4 @@ input {
   .rulesGridB {
     grid-template-columns: 1fr;
   }
-  }
+}

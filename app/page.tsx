@@ -19,7 +19,6 @@ type GameState = {
   deck: string[];
   currentCard: string | null;
 
-  // NEW: turn tracking + last drawer
   turn: string | null;
   lastDrawBy: string | null;
 
@@ -94,7 +93,6 @@ function ruleForCard(card: string | null): string {
   if (!card) return "Draw to start.";
   const { rank } = parseCard(card);
 
-  // Keep this simple for now (we can expand to the full “power card” flows next).
   switch (rank) {
     case "A":
       return "Ace = Waterfall (optional timer/ready-check later).";
@@ -170,7 +168,7 @@ export default function Page() {
   });
 
   const [roomCode, setRoomCode] = useState("kad");
-  const [name, setName] = useState(""); // starts blank (fixed)
+  const [name, setName] = useState(""); // starts blank ✅
 
   const [connected, setConnected] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -246,11 +244,9 @@ export default function Page() {
 
   function getTurnOrder(gs: GameState): string[] {
     const ids = Object.keys(gs.players).filter(Boolean);
-    // keep host first if present, then alpha
     const host = gs.host ? [gs.host] : [];
     const rest = ids.filter((x) => x !== gs.host).sort((a, b) => a.localeCompare(b));
     const merged = [...host, ...rest];
-    // de-dupe just in case
     return Array.from(new Set(merged)).slice(0, 6);
   }
 
@@ -289,7 +285,6 @@ export default function Page() {
     next.players[me.current].cardsDrawn++;
     next.lastDrawBy = me.current;
 
-    // turn advances AFTER a successful draw (simple rotate)
     next.turn = advanceTurn(next);
 
     setState(next);
@@ -313,7 +308,7 @@ export default function Page() {
   }
 
   /* =========================
-     VIDEO ATTACHMENT (React tiles)
+     VIDEO ATTACHMENT
   ========================= */
 
   function attachTrackToIdentity(track: any, identity: string) {
@@ -370,7 +365,6 @@ export default function Page() {
         setState((s) => {
           const n = clone(s);
           ensurePlayer(n, participant.identity);
-          // keep turn sane if missing
           if (!n.turn) n.turn = n.host || participant.identity;
           return n;
         });
@@ -393,10 +387,7 @@ export default function Page() {
         setState((s) => {
           const n = clone(s);
           if (n.players[participant.identity]) delete n.players[participant.identity];
-
-          // if turn holder left, advance
           if (n.turn === participant.identity) n.turn = advanceTurn(n);
-
           return n;
         });
       });
@@ -406,7 +397,6 @@ export default function Page() {
         if (!msg) return;
 
         if (msg.type === "STATE") {
-          // backward-safe defaults
           const incoming: GameState = {
             host: msg.data.host ?? null,
             deck: msg.data.deck ?? [],
@@ -445,7 +435,6 @@ export default function Page() {
 
       setConnected(true);
 
-      // init / merge state
       const current = stateRef.current;
       const next = clone(current);
       ensurePlayer(next, identity);
@@ -455,14 +444,12 @@ export default function Page() {
         next.deck = shuffle(buildDeck());
         next.turn = identity;
       } else {
-        // ensure turn exists
         if (!next.turn) next.turn = next.host;
       }
 
       setState(next);
       await send({ type: "STATE", data: next });
 
-      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
@@ -515,8 +502,7 @@ export default function Page() {
     const others = Object.keys(state.players)
       .filter((id) => id && id !== me.current)
       .sort((a, b) => a.localeCompare(b));
-    const merged = [...mine, ...others].slice(0, 6);
-    return merged;
+    return [...mine, ...others].slice(0, 6);
   }, [state.players]);
 
   const slotIds = useMemo(() => {
@@ -525,41 +511,39 @@ export default function Page() {
     return filled.slice(0, 6);
   }, [orderedPlayers]);
 
-  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
-  const layout = computeVideoLayout(effectiveCount);
+  // ✅ FIX: compute layout based on rendered slots (always 6), not connected players
+  const layout = computeVideoLayout(slotIds.length);
 
-  const { rank, suit } = parseCard(state.currentCard);
   const ruleText = useMemo(() => ruleForCard(state.currentCard), [state.currentCard]);
-
   const turnLabel = state.turn || state.host || "—";
 
   function CardFace({ card }: { card: string | null }) {
     const { rank: rnk, suit: sut } = parseCard(card);
     const red = isRedSuit(sut);
 
+    const ink = red ? "rgba(239,68,68,0.95)" : "rgba(2,6,23,0.9)";
+    const ghost = red ? "rgba(239,68,68,0.20)" : "rgba(2,6,23,0.12)";
+
     return (
       <div className="bigCardB" aria-label="current card">
         <div className="cornerTL">
-          <div className="cornerRank" style={{ color: red ? "rgba(239,68,68,0.95)" : "rgba(2,6,23,0.9)" }}>
+          <div className="cornerRank" style={{ color: ink }}>
             {rnk}
           </div>
-          <div className="cornerSuit" style={{ color: red ? "rgba(239,68,68,0.95)" : "rgba(2,6,23,0.9)" }}>
+          <div className="cornerSuit" style={{ color: ink }}>
             {sut || " "}
           </div>
         </div>
 
-        <div
-          className="centerSuit"
-          style={{ color: red ? "rgba(239,68,68,0.20)" : "rgba(2,6,23,0.12)" }}
-        >
+        <div className="centerSuit" style={{ color: ghost }}>
           {sut || " "}
         </div>
 
         <div className="cornerBR">
-          <div className="cornerRank" style={{ color: red ? "rgba(239,68,68,0.95)" : "rgba(2,6,23,0.9)" }}>
+          <div className="cornerRank" style={{ color: ink }}>
             {rnk}
           </div>
-          <div className="cornerSuit" style={{ color: red ? "rgba(239,68,68,0.95)" : "rgba(2,6,23,0.9)" }}>
+          <div className="cornerSuit" style={{ color: ink }}>
             {sut || " "}
           </div>
         </div>
@@ -569,524 +553,6 @@ export default function Page() {
 
   return (
     <div className="appB">
-      <style jsx global>{`
-        /* =========================
-           ONE-SCREEN B LAYOUT
-        ========================= */
-
-        .appB {
-          height: 100svh;
-          width: min(520px, 100%);
-          margin: 0 auto;
-          padding: 12px;
-          display: grid;
-          grid-template-rows: auto 1fr;
-          gap: 10px;
-          overflow: hidden;
-        }
-
-        .topbarB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .brandB {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          min-width: 0;
-        }
-
-        /* NEW: real logo image */
-        .logoImgB {
-          width: 40px;
-          height: 40px;
-          border-radius: 12px;
-          object-fit: cover;
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          background: rgba(2, 6, 23, 0.35);
-          flex: 0 0 auto;
-        }
-
-        .titleB {
-          font-size: 18px;
-          font-weight: 900;
-          line-height: 1.1;
-          letter-spacing: 0.02em;
-        }
-
-        .statusB {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          font-weight: 900;
-          font-size: 12px;
-          white-space: nowrap;
-          padding: 8px 10px;
-          border-radius: 999px;
-          background: rgba(15, 23, 42, 0.55);
-          border: 1px solid rgba(148, 163, 184, 0.18);
-        }
-
-        .dotB {
-          width: 10px;
-          height: 10px;
-          border-radius: 999px;
-          box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.12);
-        }
-
-        .fsBtnB {
-          border: 0;
-          border-radius: 14px;
-          padding: 8px 10px;
-          font-weight: 900;
-          color: rgba(226, 232, 240, 0.95);
-          background: rgba(148, 163, 184, 0.14);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          cursor: pointer;
-        }
-
-        .shellB {
-          display: grid;
-          grid-template-rows: 1fr auto;
-          gap: 10px;
-          overflow: hidden;
-          min-height: 0;
-        }
-
-        .cardB {
-          background: rgba(15, 23, 42, 0.45);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          border-radius: 18px;
-          padding: 12px;
-          overflow: hidden;
-          backdrop-filter: blur(10px);
-        }
-
-        .joinCardB {
-          display: grid;
-          gap: 10px;
-        }
-
-        .fieldB {
-          display: grid;
-          gap: 6px;
-          font-weight: 900;
-          font-size: 12px;
-          opacity: 0.95;
-        }
-
-        .fieldB input {
-          width: 100%;
-          padding: 12px 12px;
-          border-radius: 14px;
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.35);
-          color: rgba(226, 232, 240, 0.95);
-          outline: none;
-        }
-
-        .fieldB input:focus {
-          border-color: rgba(34, 197, 94, 0.35);
-          box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
-        }
-
-        .rowB {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-        }
-
-        .btnB {
-          border: 0;
-          border-radius: 14px;
-          padding: 12px 14px;
-          font-weight: 900;
-          color: rgba(226, 232, 240, 0.95);
-          background: rgba(148, 163, 184, 0.16);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          cursor: pointer;
-        }
-
-        .btnB:disabled {
-          opacity: 0.55;
-          cursor: default;
-        }
-
-        .btnPrimaryB {
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.35), rgba(34, 197, 94, 0.18));
-          border-color: rgba(34, 197, 94, 0.28);
-        }
-
-        .btnDangerB {
-          background: linear-gradient(180deg, rgba(248, 113, 113, 0.30), rgba(248, 113, 113, 0.14));
-          border-color: rgba(248, 113, 113, 0.25);
-        }
-
-        .btnTinyB {
-          padding: 10px 12px;
-          border-radius: 12px;
-          font-size: 12px;
-        }
-
-        .noteB {
-          font-size: 12px;
-          opacity: 0.85;
-          line-height: 1.25;
-        }
-
-        /* =========================
-           VIDEO AREA
-        ========================= */
-
-        .videoCardB {
-          display: grid;
-          grid-template-rows: auto 1fr;
-          gap: 10px;
-          min-height: 0;
-        }
-
-        .cardHeadB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-        }
-
-        .cardHeadB h2 {
-          margin: 0;
-          font-size: 14px;
-          font-weight: 900;
-          letter-spacing: 0.02em;
-        }
-
-        .videoGridB {
-          min-height: 0;
-          display: grid;
-          gap: 8px;
-          align-content: stretch;
-          justify-content: stretch;
-        }
-
-        .videoGridB[data-layout="l1"] {
-          grid-template-columns: 1fr;
-          grid-template-rows: 1fr;
-        }
-        .videoGridB[data-layout="l2"] {
-          grid-template-columns: repeat(2, 1fr);
-          grid-template-rows: 1fr;
-        }
-        .videoGridB[data-layout="l3"] {
-          grid-template-columns: repeat(3, 1fr);
-          grid-template-rows: 1fr;
-        }
-        .videoGridB[data-layout="l4"] {
-          grid-template-columns: repeat(2, 1fr);
-          grid-template-rows: repeat(2, 1fr);
-        }
-        .videoGridB[data-layout="l5"],
-        .videoGridB[data-layout="l6"] {
-          grid-template-columns: repeat(3, 1fr);
-          grid-template-rows: repeat(2, 1fr);
-        }
-
-        .vTile {
-          position: relative;
-          border-radius: 16px;
-          overflow: hidden;
-          background: rgba(2, 6, 23, 0.35);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          min-height: 0;
-        }
-
-        .vTile video {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-          background: rgba(2, 6, 23, 0.35);
-        }
-
-        .vTag {
-          position: absolute;
-          left: 10px;
-          bottom: 10px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 900;
-          background: rgba(2, 6, 23, 0.55);
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          color: rgba(226, 232, 240, 0.95);
-          max-width: calc(100% - 20px);
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        /* Empty placeholders */
-        .vEmpty {
-          display: grid;
-          place-items: center;
-          color: rgba(226, 232, 240, 0.35);
-          font-weight: 1000;
-          letter-spacing: 0.04em;
-        }
-
-        .vPlus {
-          font-size: 42px;
-          line-height: 1;
-          opacity: 0.35;
-        }
-
-        .vEmptyTag {
-          position: absolute;
-          left: 10px;
-          bottom: 10px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 900;
-          background: rgba(2, 6, 23, 0.38);
-          border: 1px solid rgba(148, 163, 184, 0.14);
-          color: rgba(226, 232, 240, 0.65);
-        }
-
-        /* =========================
-           BOTTOM BAR (card bigger, same overall area)
-        ========================= */
-
-        .bottomBarB {
-          display: grid;
-          grid-template-columns: 1.15fr 0.85fr;
-          gap: 10px;
-          min-height: 0;
-          align-items: end;
-        }
-
-        .deckMiniB {
-          display: grid;
-          grid-template-rows: auto;
-          gap: 10px;
-          min-height: 0;
-        }
-
-        .drawComboB {
-          width: 100%;
-          border: 0;
-          border-radius: 18px;
-          padding: 12px;
-          display: grid;
-          grid-template-columns: 108px 1fr auto; /* bigger card column */
-          gap: 12px;
-          align-items: center;
-          color: rgba(226, 232, 240, 0.95);
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.18), rgba(2, 6, 23, 0.35));
-          border: 1px solid rgba(34, 197, 94, 0.22);
-          cursor: pointer;
-        }
-
-        .drawComboB:active {
-          transform: translateY(1px);
-        }
-
-        /* BIGGER CARD (like your pic 3) */
-        .cardSquareB {
-          width: 104px;
-          height: 86px;
-          border-radius: 18px;
-          background: rgba(2, 6, 23, 0.32);
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          display: grid;
-          place-items: center;
-          overflow: hidden;
-        }
-
-        .bigCardB {
-          width: 92px;
-          height: 74px;
-          border-radius: 16px;
-          background: rgba(248, 250, 252, 0.94);
-          border: 1px solid rgba(2, 6, 23, 0.25);
-          position: relative;
-          overflow: hidden;
-        }
-
-        .cornerTL {
-          position: absolute;
-          left: 10px;
-          top: 8px;
-          display: grid;
-          gap: 2px;
-        }
-
-        .cornerBR {
-          position: absolute;
-          right: 10px;
-          bottom: 8px;
-          display: grid;
-          gap: 2px;
-          transform: rotate(180deg);
-          transform-origin: center;
-        }
-
-        .cornerRank {
-          font-weight: 1000;
-          font-size: 16px;
-          line-height: 1;
-        }
-
-        .cornerSuit {
-          font-weight: 1000;
-          font-size: 14px;
-          line-height: 1;
-        }
-
-        .centerSuit {
-          position: absolute;
-          left: 50%;
-          top: 50%;
-          transform: translate(-50%, -48%);
-          font-size: 44px;
-          font-weight: 900;
-          line-height: 1;
-          user-select: none;
-        }
-
-        .drawTextB {
-          min-width: 0;
-          text-align: left;
-        }
-
-        /* Replace “CURRENT CARD / tap to draw” with turn + rule */
-        .drawTitleB {
-          font-weight: 1000;
-          letter-spacing: 0.06em;
-          font-size: 13px;
-          line-height: 1.05;
-          opacity: 0.9;
-        }
-
-        .turnLineB {
-          margin-top: 6px;
-          font-weight: 1000;
-          font-size: 16px;
-          letter-spacing: 0.02em;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .ruleLineB {
-          margin-top: 4px;
-          font-size: 12px;
-          opacity: 0.85;
-          font-weight: 900;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-
-        .tapLineB {
-          margin-top: 6px;
-          font-size: 12px;
-          opacity: 0.75;
-          font-weight: 900;
-        }
-
-        .drawMetaB {
-          display: grid;
-          justify-items: end;
-          gap: 6px;
-        }
-
-        .metaPillB {
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 900;
-          background: rgba(2, 6, 23, 0.35);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          opacity: 0.95;
-          white-space: nowrap;
-        }
-
-        .statsMiniB {
-          display: grid;
-          grid-template-rows: auto 1fr;
-          gap: 10px;
-          min-height: 0;
-        }
-
-        .yourDrinksRowB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 12px;
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          background: rgba(2, 6, 23, 0.28);
-        }
-
-        .labelMiniB {
-          font-size: 12px;
-          opacity: 0.8;
-          font-weight: 900;
-        }
-
-        .drinkNumB {
-          font-weight: 1000;
-          font-size: 18px;
-        }
-
-        .btnGroupB {
-          display: inline-flex;
-          gap: 8px;
-        }
-
-        .playersMiniListB {
-          min-height: 0;
-          overflow: auto;
-          border-radius: 16px;
-          border: 1px solid rgba(148, 163, 184, 0.14);
-          background: rgba(2, 6, 23, 0.18);
-        }
-
-        .pRowB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
-          padding: 10px 12px;
-          border-bottom: 1px solid rgba(148, 163, 184, 0.10);
-        }
-
-        .pRowB:last-child {
-          border-bottom: 0;
-        }
-
-        .pNameB {
-          font-weight: 1000;
-        }
-
-        .pMetaB {
-          opacity: 0.9;
-          font-weight: 800;
-          font-size: 12px;
-          white-space: nowrap;
-        }
-
-        @media (max-width: 420px) {
-          .bottomBarB {
-            grid-template-columns: 1fr;
-          }
-        }
-      `}</style>
-
-      {/* TOP BAR: logo + title + fullscreen + status (no extra info line) */}
       <div className="topbarB">
         <div className="brandB">
           <img className="logoImgB" src="/kylesadick-logo.png" alt="KylesADick logo" />
@@ -1140,7 +606,6 @@ export default function Page() {
         </div>
       ) : (
         <div className="shellB">
-          {/* MAIN: VIDEO */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
@@ -1180,7 +645,6 @@ export default function Page() {
                       autoPlay
                       playsInline
                       muted={isMe}
-                      // avoid iOS forcing fullscreen
                       // @ts-ignore
                       webkit-playsinline="true"
                     />
@@ -1191,7 +655,6 @@ export default function Page() {
             </div>
           </div>
 
-          {/* BOTTOM */}
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw}>
@@ -1248,14 +711,13 @@ export default function Page() {
         </div>
       )}
 
-      {/* Attach local tracks whenever we connect + tiles exist */}
       <AttachLocalOnConnect connected={connected} me={me} roomRef={roomRef} attachLocalTracks={attachLocalTracks} />
     </div>
   );
 }
 
 /* =========================
-   Helper component: attach local video after mount
+   Helper: attach local video after mount
 ========================= */
 
 function AttachLocalOnConnect({
@@ -1275,7 +737,6 @@ function AttachLocalOnConnect({
     const identity = me.current;
     if (!room || !identity) return;
 
-    // slight delay so React tiles render before attach
     const t = setTimeout(() => {
       attachLocalTracks(room, identity).catch(() => {});
     }, 150);
@@ -1284,4 +745,4 @@ function AttachLocalOnConnect({
   }, [connected, me, roomRef, attachLocalTracks]);
 
   return null;
-              }
+       }

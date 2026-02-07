@@ -20,10 +20,10 @@ type PowerRound = {
   kind: PowerKind;
   active: boolean;
   startedBy: string; // holder who started it
-  eligible: string[]; // snapshot of players at start
+  eligible: string[]; // snapshot at start
   tapped: string[]; // order of taps; last = loser
-  loser: string | null; // set when complete
-  startedAt: number; // Date.now()
+  loser: string | null;
+  startedAt: number;
 };
 
 type GameState = {
@@ -36,13 +36,11 @@ type GameState = {
 
   players: Record<string, PlayerStats>;
 
-  // Power status holders (badges)
   heavenHolder: string | null; // 7
   thumbHolder: string | null; // J
-  qmHolder: string | null; // Q (badge only for now)
-  kingHolder: string | null; // K (badge only for now)
+  qmHolder: string | null; // Q
+  kingHolder: string | null; // K
 
-  // Active power round (7/J fires)
   powerRound: PowerRound | null;
 };
 
@@ -201,7 +199,7 @@ export default function Page() {
   const stateRef = useRef<GameState>(clone(emptyState));
 
   const [roomCode, setRoomCode] = useState("kad");
-  const [name, setName] = useState(""); // starts blank
+  const [name, setName] = useState("");
 
   const [connected, setConnected] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -264,9 +262,7 @@ export default function Page() {
 
   function ensurePlayer(gs: GameState, id: string) {
     if (!id) return;
-    if (!gs.players[id]) {
-      gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
-    }
+    if (!gs.players[id]) gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
   }
 
   function getTurnOrder(gs: GameState): string[] {
@@ -291,17 +287,10 @@ export default function Page() {
     return kind === "heaven" ? gs.heavenHolder : gs.thumbHolder;
   }
 
-  function kindToLabel(kind: PowerKind) {
-    return kind === "heaven" ? "HEAVEN" : "THUMB";
-  }
-
   function canStartPower(gs: GameState, kind: PowerKind, who: string): boolean {
     const holder = holderFor(gs, kind);
     if (!holder || holder !== who) return false;
-
-    // If another power is active, don't allow starting a new one.
     if (gs.powerRound?.active) return false;
-
     return true;
   }
 
@@ -311,9 +300,7 @@ export default function Page() {
     if (!holder || holder !== startedBy) return next;
     if (next.powerRound?.active) return next;
 
-    // Eligible = current connected players snapshot (max 6)
     const eligible = getTurnOrder(next);
-    // Ensure holder exists as eligible if they are present
     if (startedBy && !eligible.includes(startedBy)) eligible.unshift(startedBy);
 
     next.powerRound = {
@@ -332,19 +319,14 @@ export default function Page() {
   function tapPowerHost(gs: GameState, kind: PowerKind, by: string): GameState {
     const next = clone(gs);
     const pr = next.powerRound;
-
     if (!pr || !pr.active || pr.kind !== kind) return next;
     if (!by) return next;
 
-    // Only eligible players count
     if (!pr.eligible.includes(by)) return next;
-
-    // One tap per player
     if (pr.tapped.includes(by)) return next;
 
     pr.tapped.push(by);
 
-    // When everyone tapped, last one is loser
     if (pr.tapped.length >= pr.eligible.length) {
       pr.active = false;
       pr.loser = pr.tapped[pr.tapped.length - 1] || null;
@@ -366,7 +348,6 @@ export default function Page() {
 
     const current = stateRef.current;
 
-    // host draws; guests request draw
     if (current.host !== me.current) {
       await send({ type: "DRAW", requestedBy: me.current });
       return;
@@ -374,9 +355,7 @@ export default function Page() {
 
     const next = clone(current);
 
-    if (!next.deck.length) {
-      next.deck = shuffle(buildDeck());
-    }
+    if (!next.deck.length) next.deck = shuffle(buildDeck());
 
     const card = next.deck.shift() || null;
     next.currentCard = card;
@@ -385,15 +364,12 @@ export default function Page() {
     next.players[me.current].cardsDrawn++;
     next.lastDrawBy = me.current;
 
-    // Set power holders based on draw (holder persists until replaced by next same card draw)
     const { rank } = parseCard(card);
     if (rank === "7") next.heavenHolder = me.current;
     if (rank === "J") next.thumbHolder = me.current;
     if (rank === "Q") next.qmHolder = me.current;
     if (rank === "K") next.kingHolder = me.current;
 
-    // If holder changed and there was an old unresolved powerRound, keep it (user can clear),
-    // but do not auto-start anything.
     next.turn = advanceTurn(next);
 
     setState(next);
@@ -419,7 +395,6 @@ export default function Page() {
   async function startPower(kind: PowerKind) {
     const current = stateRef.current;
 
-    // Holder requests; host executes authoritative update
     if (current.host !== me.current) {
       await send({ type: "POWER_START", kind, requestedBy: me.current });
       return;
@@ -433,7 +408,6 @@ export default function Page() {
   async function tapPower(kind: PowerKind) {
     const current = stateRef.current;
 
-    // Guests request; host executes authoritative update
     if (current.host !== me.current) {
       await send({ type: "POWER_TAP", kind, by: me.current });
       return;
@@ -447,7 +421,6 @@ export default function Page() {
   async function clearPower() {
     const current = stateRef.current;
 
-    // Anyone can request clear; host decides (we'll allow host or holder to clear)
     if (current.host !== me.current) {
       await send({ type: "POWER_CLEAR", requestedBy: me.current });
       return;
@@ -476,9 +449,7 @@ export default function Page() {
     room.localParticipant.videoTrackPublications.forEach((pub) => {
       const track = pub.track;
       if (!track) return;
-      if (track.kind === Track.Kind.Video) {
-        attachTrackToIdentity(track, identity);
-      }
+      if (track.kind === Track.Kind.Video) attachTrackToIdentity(track, identity);
     });
   }
 
@@ -518,9 +489,7 @@ export default function Page() {
           return n;
         });
 
-        if (track.kind === Track.Kind.Video) {
-          attachTrackToIdentity(track, participant.identity);
-        }
+        if (track.kind === Track.Kind.Video) attachTrackToIdentity(track, participant.identity);
       });
 
       room.on(RoomEvent.ParticipantConnected, (participant) => {
@@ -535,20 +504,15 @@ export default function Page() {
       room.on(RoomEvent.ParticipantDisconnected, (participant) => {
         setState((s) => {
           const n = clone(s);
-          if (n.players[participant.identity]) delete n.players[participant.identity];
 
-          // if turn holder left, advance
+          if (n.players[participant.identity]) delete n.players[participant.identity];
           if (n.turn === participant.identity) n.turn = advanceTurn(n);
 
-          // if a holder leaves, clear that holder
           if (n.heavenHolder === participant.identity) n.heavenHolder = null;
           if (n.thumbHolder === participant.identity) n.thumbHolder = null;
           if (n.qmHolder === participant.identity) n.qmHolder = null;
           if (n.kingHolder === participant.identity) n.kingHolder = null;
 
-          // if power round active and someone left:
-          // - remove from eligible
-          // - if that completes the round, finalize loser
           if (n.powerRound?.active) {
             const pr = n.powerRound;
             pr.eligible = pr.eligible.filter((id) => id !== participant.identity);
@@ -589,42 +553,32 @@ export default function Page() {
           return;
         }
 
-        // Host: execute draw on request
         if (msg.type === "DRAW") {
           const current = stateRef.current;
-          if (roomRef.current && me.current && current.host === me.current) {
-            draw();
-          }
+          if (roomRef.current && me.current && current.host === me.current) draw();
           return;
         }
 
-        // Host: start power on request
         if (msg.type === "POWER_START") {
           const current = stateRef.current;
           if (current.host === me.current) {
-            const requestedBy = msg.requestedBy as string;
-            const kind = msg.kind as PowerKind;
-            const next = startPowerRoundHost(current, kind, requestedBy);
+            const next = startPowerRoundHost(current, msg.kind as PowerKind, msg.requestedBy as string);
             setState(next);
             send({ type: "STATE", data: next });
           }
           return;
         }
 
-        // Host: tap power on request
         if (msg.type === "POWER_TAP") {
           const current = stateRef.current;
           if (current.host === me.current) {
-            const by = msg.by as string;
-            const kind = msg.kind as PowerKind;
-            const next = tapPowerHost(current, kind, by);
+            const next = tapPowerHost(current, msg.kind as PowerKind, msg.by as string);
             setState(next);
             send({ type: "STATE", data: next });
           }
           return;
         }
 
-        // Host: clear power (allow host OR holder who requested)
         if (msg.type === "POWER_CLEAR") {
           const current = stateRef.current;
           if (current.host === me.current) {
@@ -646,7 +600,6 @@ export default function Page() {
           return;
         }
 
-        // Player stat updates
         if (msg.type === "UPDATE") {
           setState((s) => {
             const n = clone(s);
@@ -657,15 +610,11 @@ export default function Page() {
         }
       });
 
-      room.on(RoomEvent.Disconnected, () => {
-        setConnected(false);
-      });
+      room.on(RoomEvent.Disconnected, () => setConnected(false));
 
       await room.connect(data.url, data.token);
-
       setConnected(true);
 
-      // init / merge state
       const current = stateRef.current;
       const next = clone(current);
       ensurePlayer(next, identity);
@@ -681,7 +630,6 @@ export default function Page() {
       setState(next);
       await send({ type: "STATE", data: next });
 
-      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
@@ -750,8 +698,8 @@ export default function Page() {
     return b.join(" ");
   }
 
-  const activePR = state.powerRound?.active ? state.powerRound : null;
-  const prKind = state.powerRound?.kind ?? null;
+  const pr = state.powerRound;
+  const prActive = !!pr?.active;
 
   const iAmHeavenHolder = state.heavenHolder === me.current;
   const iAmThumbHolder = state.thumbHolder === me.current;
@@ -760,9 +708,11 @@ export default function Page() {
   const canStartThumb = canStartPower(state, "thumb", me.current);
 
   const iCanTap =
-    activePR && me.current && activePR.eligible.includes(me.current) && !activePR.tapped.includes(me.current);
+    prActive && me.current && pr!.eligible.includes(me.current) && !pr!.tapped.includes(me.current);
 
-  const showPowerPanel = true; // always show holder controls area (small)
+  // show strip only when needed (huge space savings)
+  const showPowerStrip =
+    !!state.heavenHolder || !!state.thumbHolder || !!state.powerRound;
 
   function CardFace({ card }: { card: string | null }) {
     const { rank: rnk, suit: sut } = parseCard(card);
@@ -800,7 +750,7 @@ export default function Page() {
 
   return (
     <div className="appB">
-      {/* Small safety styles + new UI bits (turn highlight + power buttons) */}
+      {/* compact power UI + turn highlight (no layout bloat) */}
       <style jsx global>{`
         .turnActiveB {
           box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.55), 0 0 0 6px rgba(34, 197, 94, 0.14);
@@ -822,67 +772,89 @@ export default function Page() {
           text-overflow: ellipsis;
           white-space: nowrap;
         }
-        .powerBarB {
+
+        /* NEW: compact power strip */
+        .powerStripB {
           margin-top: 10px;
-          display: grid;
-          gap: 8px;
-        }
-        .powerRowB {
           display: flex;
           gap: 8px;
           align-items: center;
+        }
+        .pwrBtnB {
+          flex: 1 1 auto;
+          display: flex;
+          align-items: center;
           justify-content: space-between;
+          gap: 8px;
           padding: 10px 12px;
           border-radius: 16px;
           border: 1px solid rgba(148, 163, 184, 0.14);
           background: rgba(2, 6, 23, 0.18);
-        }
-        .powerLeftB {
-          display: grid;
-          gap: 4px;
+          color: rgba(226, 232, 240, 0.95);
+          font-weight: 1000;
+          cursor: pointer;
           min-width: 0;
         }
-        .powerTitleB {
-          font-weight: 1000;
-          font-size: 12px;
-          letter-spacing: 0.06em;
-          opacity: 0.92;
+        .pwrBtnB:disabled {
+          opacity: 0.55;
+          cursor: default;
         }
-        .powerSubB {
+        .pwrL {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          min-width: 0;
+        }
+        .pwrIcon {
+          font-size: 16px;
+          line-height: 1;
+        }
+        .pwrText {
+          display: grid;
+          gap: 2px;
+          min-width: 0;
+        }
+        .pwrTop {
+          font-size: 12px;
+          letter-spacing: 0.08em;
+          opacity: 0.9;
+          white-space: nowrap;
+        }
+        .pwrSub {
           font-size: 12px;
           font-weight: 900;
-          opacity: 0.78;
+          opacity: 0.75;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .powerBtnB {
-          border: 0;
-          border-radius: 16px;
-          padding: 10px 12px;
-          font-weight: 1000;
+        .pwrAction {
+          padding: 6px 10px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 1100;
           letter-spacing: 0.06em;
-          color: rgba(226, 232, 240, 0.95);
-          background: linear-gradient(180deg, rgba(34, 197, 94, 0.24), rgba(2, 6, 23, 0.35));
           border: 1px solid rgba(34, 197, 94, 0.22);
+          background: rgba(34, 197, 94, 0.12);
+          white-space: nowrap;
+        }
+        .pwrTap {
+          border-color: rgba(248, 113, 113, 0.22);
+          background: rgba(248, 113, 113, 0.12);
+        }
+        .pwrClearB {
+          flex: 0 0 auto;
+          padding: 10px 12px;
+          border-radius: 16px;
+          border: 1px solid rgba(148, 163, 184, 0.14);
+          background: rgba(148, 163, 184, 0.12);
+          color: rgba(226, 232, 240, 0.95);
+          font-weight: 1000;
           cursor: pointer;
           white-space: nowrap;
         }
-        .powerBtnB:disabled {
-          opacity: 0.55;
-          cursor: default;
-        }
-        .powerTapB {
-          background: linear-gradient(180deg, rgba(248, 113, 113, 0.22), rgba(2, 6, 23, 0.35));
-          border: 1px solid rgba(248, 113, 113, 0.22);
-        }
-        .powerClearB {
-          background: rgba(148, 163, 184, 0.16);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-        }
       `}</style>
 
-      {/* TOP BAR */}
       <div className="topbarB">
         <div className="brandB">
           <img className="logoImgB" src="/kylesadick-logo.png" alt="KylesADick logo" />
@@ -936,7 +908,6 @@ export default function Page() {
         </div>
       ) : (
         <div className="shellB">
-          {/* MAIN: VIDEO */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
@@ -990,7 +961,6 @@ export default function Page() {
             </div>
           </div>
 
-          {/* BOTTOM */}
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
               <button className="drawComboB" onClick={draw}>
@@ -1011,95 +981,74 @@ export default function Page() {
                 </div>
               </button>
 
-              {/* POWER PANEL (Heaven / Thumb) */}
-              {showPowerPanel ? (
-                <div className="powerBarB">
-                  <div className="powerRowB">
-                    <div className="powerLeftB">
-                      <div className="powerTitleB">☁️ HEAVEN POWER</div>
-                      <div className="powerSubB">
-                        Holder: <b>{state.heavenHolder || "—"}</b>
-                        {activePR?.kind === "heaven" ? (
-                          <>
-                            {" "}
-                            · <b>ACTIVE</b> ({activePR.tapped.length}/{activePR.eligible.length})
-                          </>
-                        ) : state.powerRound?.kind === "heaven" && state.powerRound?.loser ? (
-                          <>
-                            {" "}
-                            · Loser: <b>{state.powerRound.loser}</b>
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    {activePR?.kind === "heaven" ? (
-                      <>
-                        <button className="powerBtnB powerTapB" onClick={() => tapPower("heaven")} disabled={!iCanTap}>
-                          TAP
-                        </button>
-                      </>
-                    ) : (
-                      <button className="powerBtnB" onClick={() => startPower("heaven")} disabled={!canStartHeaven}>
-                        {iAmHeavenHolder ? "START" : "START"}
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="powerRowB">
-                    <div className="powerLeftB">
-                      <div className="powerTitleB">👍 THUMB POWER</div>
-                      <div className="powerSubB">
-                        Holder: <b>{state.thumbHolder || "—"}</b>
-                        {activePR?.kind === "thumb" ? (
-                          <>
-                            {" "}
-                            · <b>ACTIVE</b> ({activePR.tapped.length}/{activePR.eligible.length})
-                          </>
-                        ) : state.powerRound?.kind === "thumb" && state.powerRound?.loser ? (
-                          <>
-                            {" "}
-                            · Loser: <b>{state.powerRound.loser}</b>
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    {activePR?.kind === "thumb" ? (
-                      <button className="powerBtnB powerTapB" onClick={() => tapPower("thumb")} disabled={!iCanTap}>
-                        TAP
-                      </button>
-                    ) : (
-                      <button className="powerBtnB" onClick={() => startPower("thumb")} disabled={!canStartThumb}>
-                        {iAmThumbHolder ? "START" : "START"}
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Clear button when there is a finished/active power round */}
-                  {state.powerRound ? (
-                    <div className="powerRowB">
-                      <div className="powerLeftB">
-                        <div className="powerTitleB">POWER ROUND</div>
-                        <div className="powerSubB">
-                          {state.powerRound.active ? (
-                            <>
-                              Active: <b>{kindToLabel(state.powerRound.kind)}</b> · Started by{" "}
-                              <b>{state.powerRound.startedBy}</b>
-                            </>
-                          ) : (
-                            <>
-                              Last: <b>{kindToLabel(state.powerRound.kind)}</b> · Loser:{" "}
-                              <b>{state.powerRound.loser || "—"}</b>
-                            </>
-                          )}
+              {/* ✅ COMPACT POWER STRIP (does not steal screen space) */}
+              {showPowerStrip ? (
+                <div className="powerStripB">
+                  {/* Heaven */}
+                  <button
+                    className="pwrBtnB"
+                    onClick={() => {
+                      if (prActive && pr?.kind === "heaven") tapPower("heaven");
+                      else startPower("heaven");
+                    }}
+                    disabled={
+                      prActive
+                        ? !(pr?.kind === "heaven" && iCanTap)
+                        : !canStartHeaven
+                    }
+                    title="Heaven: holder starts anytime. Last tap loses."
+                  >
+                    <div className="pwrL">
+                      <div className="pwrIcon">☁️</div>
+                      <div className="pwrText">
+                        <div className="pwrTop">HEAVEN</div>
+                        <div className="pwrSub">
+                          Holder: {state.heavenHolder || "—"}
+                          {pr?.kind === "heaven" && pr.active ? ` · ${pr.tapped.length}/${pr.eligible.length}` : ""}
+                          {pr?.kind === "heaven" && !pr.active && pr.loser ? ` · Loser: ${pr.loser}` : ""}
                         </div>
                       </div>
-
-                      <button className="powerBtnB powerClearB" onClick={clearPower}>
-                        CLEAR
-                      </button>
                     </div>
+                    <div className={`pwrAction ${prActive && pr?.kind === "heaven" ? "pwrTap" : ""}`}>
+                      {prActive && pr?.kind === "heaven" ? "TAP" : "START"}
+                    </div>
+                  </button>
+
+                  {/* Thumb */}
+                  <button
+                    className="pwrBtnB"
+                    onClick={() => {
+                      if (prActive && pr?.kind === "thumb") tapPower("thumb");
+                      else startPower("thumb");
+                    }}
+                    disabled={
+                      prActive
+                        ? !(pr?.kind === "thumb" && iCanTap)
+                        : !canStartThumb
+                    }
+                    title="Thumb: holder starts anytime. Last tap loses."
+                  >
+                    <div className="pwrL">
+                      <div className="pwrIcon">👍</div>
+                      <div className="pwrText">
+                        <div className="pwrTop">THUMB</div>
+                        <div className="pwrSub">
+                          Holder: {state.thumbHolder || "—"}
+                          {pr?.kind === "thumb" && pr.active ? ` · ${pr.tapped.length}/${pr.eligible.length}` : ""}
+                          {pr?.kind === "thumb" && !pr.active && pr.loser ? ` · Loser: ${pr.loser}` : ""}
+                        </div>
+                      </div>
+                    </div>
+                    <div className={`pwrAction ${prActive && pr?.kind === "thumb" ? "pwrTap" : ""}`}>
+                      {prActive && pr?.kind === "thumb" ? "TAP" : "START"}
+                    </div>
+                  </button>
+
+                  {/* Clear only when a round exists */}
+                  {state.powerRound ? (
+                    <button className="pwrClearB" onClick={clearPower} title="Clear the current/last power round">
+                      CLEAR
+                    </button>
                   ) : null}
                 </div>
               ) : null}
@@ -1125,7 +1074,6 @@ export default function Page() {
                 {orderedPlayers.map((id) => {
                   const p = state.players[id];
                   if (!p) return null;
-
                   const badges = badgeRowForPlayer(id);
 
                   return (
@@ -1145,7 +1093,6 @@ export default function Page() {
         </div>
       )}
 
-      {/* Attach local tracks whenever we connect + tiles exist */}
       <AttachLocalOnConnect connected={connected} me={me} roomRef={roomRef} attachLocalTracks={attachLocalTracks} />
     </div>
   );
@@ -1180,4 +1127,4 @@ function AttachLocalOnConnect({
   }, [connected, me, roomRef, attachLocalTracks]);
 
   return null;
-     }
+                     }

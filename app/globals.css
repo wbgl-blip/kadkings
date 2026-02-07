@@ -65,7 +65,7 @@ input {
   max-height: 40px;
 }
 
-/* ✅ Top bar title + pills (these are what you’re missing right now) */
+/* ✅ Top bar title + pills */
 .titleB {
   font-size: 18px;
   font-weight: 1000;
@@ -105,6 +105,7 @@ input {
   cursor: pointer;
 }
 
+/* (legacy) */
 .logoB {
   width: 34px;
   height: 34px;
@@ -282,14 +283,19 @@ input {
   cursor: pointer;
 }
 
+/* ✅ GRID: prevent “one huge tile + stacked rows” by controlling track sizing */
 .videoGridB {
   min-height: 0;
   display: grid;
   gap: 8px;
   align-content: stretch;
   justify-content: stretch;
+
+  /* Key: don’t let implicit rows autosize into weird bars */
+  grid-auto-rows: 1fr;
 }
 
+/* Layouts */
 .videoGridB[data-layout="l1"] {
   grid-template-columns: 1fr;
   grid-template-rows: 1fr;
@@ -317,6 +323,9 @@ input {
   outline-offset: -2px;
 }
 
+/* ✅ TILE SIZE FIX
+   - For multi-tile layouts, force a “tile” aspect so empties don’t become long bars.
+   - For l1, allow a wide “hero” tile (still not insane). */
 .vTile {
   position: relative;
   border-radius: 16px;
@@ -327,6 +336,34 @@ input {
   cursor: pointer;
 }
 
+/* Multi-tile layouts: keep them tile-shaped */
+.videoGridB[data-layout="l2"] .vTile,
+.videoGridB[data-layout="l3"] .vTile,
+.videoGridB[data-layout="l4"] .vTile,
+.videoGridB[data-layout="l5"] .vTile,
+.videoGridB[data-layout="l6"] .vTile {
+  aspect-ratio: 16 / 10;
+}
+
+/* l1: keep a strong tile, not a skinny bar */
+.videoGridB[data-layout="l1"] .vTile {
+  aspect-ratio: 16 / 7;
+}
+
+/* Fallback for older browsers without aspect-ratio */
+@supports not (aspect-ratio: 1 / 1) {
+  .videoGridB[data-layout="l2"] .vTile,
+  .videoGridB[data-layout="l3"] .vTile,
+  .videoGridB[data-layout="l4"] .vTile,
+  .videoGridB[data-layout="l5"] .vTile,
+  .videoGridB[data-layout="l6"] .vTile {
+    min-height: 110px;
+  }
+  .videoGridB[data-layout="l1"] .vTile {
+    min-height: 150px;
+  }
+}
+
 .vTile video {
   width: 100%;
   height: 100%;
@@ -334,7 +371,7 @@ input {
   display: block;
 }
 
-/* ✅ Empty placeholders (fixes your “+ Empty” showing wrong) */
+/* ✅ Empty placeholders */
 .vEmpty {
   display: grid;
   place-items: center;
@@ -809,4 +846,4 @@ input {
   .rulesGridB {
     grid-template-columns: 1fr;
   }
-    }
+  }

@@ -14,22 +14,16 @@ type PlayerStats = {
   cardsDrawn: number;
 };
 
-type WaterfallState = {
-  status: "idle" | "pending" | "running" | "ended";
-  drawer: string | null;
-  seconds: number; // random 5-20 each Ace
-  startedAt: number | null;
-  endsAt: number | null;
-};
+type PowerKind = "heaven" | "thumb";
 
-type HeavenState = {
-  status: "idle" | "running" | "ended";
-  drawer: string | null; // who drew 7 (only they can start)
-  startedAt: number | null;
-  endsAt: number | null; // safety auto-end so it can't get stuck
-  participants: string[]; // snapshot at start
-  taps: string[]; // order of taps (first -> last)
-  loser: string | null; // last to react
+type PowerRound = {
+  kind: PowerKind;
+  active: boolean;
+  startedBy: string; // holder who started it
+  eligible: string[]; // snapshot of players at start
+  tapped: string[]; // order of taps; last = loser
+  loser: string | null; // set when complete
+  startedAt: number; // Date.now()
 };
 
 type GameState = {
@@ -45,31 +39,20 @@ type GameState = {
   // Power status holders (badges)
   heavenHolder: string | null; // 7
   thumbHolder: string | null; // J
-  qmHolder: string | null; // Q
-  kingHolder: string | null; // K
+  qmHolder: string | null; // Q (badge only for now)
+  kingHolder: string | null; // K (badge only for now)
 
-  // Locks / minis
-  deckLocked: boolean;
-
-  // Power modes
-  waterfall: WaterfallState;
-  heaven: HeavenState;
+  // Active power round (7/J fires)
+  powerRound: PowerRound | null;
 };
 
 type Msg =
   | { type: "STATE"; data: GameState }
   | { type: "DRAW"; requestedBy?: string }
   | { type: "UPDATE"; id: string; patch: Partial<PlayerStats> }
-  | {
-      type: "ACTION";
-      action:
-        | "WATERFALL_START"
-        | "WATERFALL_END"
-        | "HEAVEN_START"
-        | "HEAVEN_TAP"
-        | "HEAVEN_END";
-      by: string;
-    };
+  | { type: "POWER_START"; kind: PowerKind; requestedBy: string }
+  | { type: "POWER_TAP"; kind: PowerKind; by: string }
+  | { type: "POWER_CLEAR"; requestedBy: string };
 
 /* =========================
    HELPERS
@@ -108,14 +91,6 @@ function decode(buf: Uint8Array) {
   }
 }
 
-function nowMs() {
-  return Date.now();
-}
-
-function randInt(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
 type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
 
 function computeVideoLayout(count: number): Layout {
@@ -144,7 +119,7 @@ function ruleForCard(card: string | null): string {
 
   switch (rank) {
     case "A":
-      return "Ace = Waterfall (drawer starts when ready).";
+      return "Ace = Waterfall (ready/start flow).";
     case "2":
       return "2 = You choose someone to drink.";
     case "3":
@@ -156,28 +131,22 @@ function ruleForCard(card: string | null): string {
     case "6":
       return "6 = Dicks / Kyle’sADick (everyone drinks).";
     case "7":
-      return "7 = Heaven (drawer starts; last to react drinks).";
+      return "7 = Heaven power (holder can start anytime).";
     case "8":
       return "8 = Mate (one-way chain).";
     case "9":
-      return "9 = Rhyme (vote if needed).";
+      return "9 = Rhyme.";
     case "10":
-      return "10 = Categories (go around).";
+      return "10 = Categories.";
     case "J":
-      return "Jack = Thumbmaster (power; last loses).";
+      return "Jack = Thumbmaster power (holder can start anytime).";
     case "Q":
-      return "Queen = Question Master (gotcha).";
+      return "Queen = Question Master (badge for now).";
     case "K":
-      return "King = Make a rule (stays active).";
+      return "King = Make a rule (badge for now).";
     default:
       return "House rules.";
   }
-}
-
-function msToSecondsLeft(endsAt: number | null) {
-  if (!endsAt) return 0;
-  const left = endsAt - nowMs();
-  return Math.max(0, Math.ceil(left / 1000));
 }
 
 /* =========================
@@ -213,11 +182,7 @@ export default function Page() {
   const roomRef = useRef<Room | null>(null);
   const me = useRef<string>("");
 
-  // host-only timers so rounds can end without server
-  const waterfallEndTimer = useRef<any>(null);
-  const heavenEndTimer = useRef<any>(null);
-
-  const initialState: GameState = {
+  const emptyState: GameState = {
     host: null,
     deck: [],
     currentCard: null,
@@ -230,16 +195,13 @@ export default function Page() {
     qmHolder: null,
     kingHolder: null,
 
-    deckLocked: false,
-
-    waterfall: { status: "idle", drawer: null, seconds: 0, startedAt: null, endsAt: null },
-    heaven: { status: "idle", drawer: null, startedAt: null, endsAt: null, participants: [], taps: [], loser: null },
+    powerRound: null,
   };
 
-  const stateRef = useRef<GameState>(clone(initialState));
+  const stateRef = useRef<GameState>(clone(emptyState));
 
   const [roomCode, setRoomCode] = useState("kad");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(""); // starts blank
 
   const [connected, setConnected] = useState(false);
   const [joining, setJoining] = useState(false);
@@ -247,19 +209,11 @@ export default function Page() {
 
   const [isFs, setIsFs] = useState(false);
 
-  const [state, setState] = useState<GameState>(clone(initialState));
-
-  // tick so countdown labels update
-  const [tick, setTick] = useState(0);
+  const [state, setState] = useState<GameState>(clone(emptyState));
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
-
-  useEffect(() => {
-    const t = setInterval(() => setTick((x) => x + 1), 250);
-    return () => clearInterval(t);
-  }, []);
 
   useEffect(() => {
     const onChange = () => setIsFs(isFullscreenNow());
@@ -309,6 +263,7 @@ export default function Page() {
   ========================= */
 
   function ensurePlayer(gs: GameState, id: string) {
+    if (!id) return;
     if (!gs.players[id]) {
       gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
     }
@@ -332,169 +287,77 @@ export default function Page() {
     return next || order[0] || gs.host;
   }
 
-  function clearTimers() {
-    if (waterfallEndTimer.current) {
-      clearTimeout(waterfallEndTimer.current);
-      waterfallEndTimer.current = null;
+  function holderFor(gs: GameState, kind: PowerKind): string | null {
+    return kind === "heaven" ? gs.heavenHolder : gs.thumbHolder;
+  }
+
+  function kindToLabel(kind: PowerKind) {
+    return kind === "heaven" ? "HEAVEN" : "THUMB";
+  }
+
+  function canStartPower(gs: GameState, kind: PowerKind, who: string): boolean {
+    const holder = holderFor(gs, kind);
+    if (!holder || holder !== who) return false;
+
+    // If another power is active, don't allow starting a new one.
+    if (gs.powerRound?.active) return false;
+
+    return true;
+  }
+
+  function startPowerRoundHost(gs: GameState, kind: PowerKind, startedBy: string): GameState {
+    const next = clone(gs);
+    const holder = holderFor(next, kind);
+    if (!holder || holder !== startedBy) return next;
+    if (next.powerRound?.active) return next;
+
+    // Eligible = current connected players snapshot (max 6)
+    const eligible = getTurnOrder(next);
+    // Ensure holder exists as eligible if they are present
+    if (startedBy && !eligible.includes(startedBy)) eligible.unshift(startedBy);
+
+    next.powerRound = {
+      kind,
+      active: true,
+      startedBy,
+      eligible: eligible.slice(0, 6),
+      tapped: [],
+      loser: null,
+      startedAt: Date.now(),
+    };
+
+    return next;
+  }
+
+  function tapPowerHost(gs: GameState, kind: PowerKind, by: string): GameState {
+    const next = clone(gs);
+    const pr = next.powerRound;
+
+    if (!pr || !pr.active || pr.kind !== kind) return next;
+    if (!by) return next;
+
+    // Only eligible players count
+    if (!pr.eligible.includes(by)) return next;
+
+    // One tap per player
+    if (pr.tapped.includes(by)) return next;
+
+    pr.tapped.push(by);
+
+    // When everyone tapped, last one is loser
+    if (pr.tapped.length >= pr.eligible.length) {
+      pr.active = false;
+      pr.loser = pr.tapped[pr.tapped.length - 1] || null;
     }
-    if (heavenEndTimer.current) {
-      clearTimeout(heavenEndTimer.current);
-      heavenEndTimer.current = null;
-    }
+
+    next.powerRound = pr;
+    return next;
   }
 
-  function isHost() {
-    return stateRef.current.host === me.current && !!me.current;
-  }
-
-  function hostBroadcast(next: GameState) {
-    setState(next);
-    send({ type: "STATE", data: next });
-  }
-
-  function currentRank() {
-    return parseCard(stateRef.current.currentCard).rank;
-  }
-
-  function canDrawerStartHeaven(gs: GameState) {
-    const r = parseCard(gs.currentCard).rank;
-    return r === "7" && gs.heaven.drawer && gs.heaven.drawer === me.current && gs.heaven.status !== "running";
-  }
-
-  function canDrawerStartWaterfall(gs: GameState) {
-    const r = parseCard(gs.currentCard).rank;
-    return r === "A" && gs.waterfall.drawer && gs.waterfall.drawer === me.current && gs.waterfall.status !== "running";
-  }
-
-  function scheduleWaterfallEnd(endsAt: number) {
-    if (!isHost()) return;
-    if (waterfallEndTimer.current) clearTimeout(waterfallEndTimer.current);
-    const delay = Math.max(0, endsAt - nowMs());
-    waterfallEndTimer.current = setTimeout(() => {
-      const gs = stateRef.current;
-      if (parseCard(gs.currentCard).rank !== "A") return;
-      if (gs.waterfall.status !== "running") return;
-      doWaterfallEnd(gs, "timer");
-    }, delay + 50);
-  }
-
-  function scheduleHeavenEnd(endsAt: number) {
-    if (!isHost()) return;
-    if (heavenEndTimer.current) clearTimeout(heavenEndTimer.current);
-    const delay = Math.max(0, endsAt - nowMs());
-    heavenEndTimer.current = setTimeout(() => {
-      const gs = stateRef.current;
-      if (parseCard(gs.currentCard).rank !== "7") return;
-      if (gs.heaven.status !== "running") return;
-      doHeavenEnd(gs, "timeout");
-    }, delay + 50);
-  }
-
-  function doWaterfallStart(gs: GameState) {
-    if (!isHost()) return;
+  function clearPowerHost(gs: GameState): GameState {
     const next = clone(gs);
-    if (parseCard(next.currentCard).rank !== "A") return;
-    if (next.waterfall.status === "running") return;
-
-    next.deckLocked = true;
-    next.waterfall.status = "running";
-    next.waterfall.startedAt = nowMs();
-    next.waterfall.endsAt = (next.waterfall.startedAt || nowMs()) + next.waterfall.seconds * 1000;
-
-    // stay on drawer until round is over
-    if (next.waterfall.drawer) next.turn = next.waterfall.drawer;
-
-    hostBroadcast(next);
-
-    if (next.waterfall.endsAt) scheduleWaterfallEnd(next.waterfall.endsAt);
-  }
-
-  function doWaterfallEnd(gs: GameState, _reason: "timer" | "host") {
-    if (!isHost()) return;
-    const next = clone(gs);
-    if (parseCard(next.currentCard).rank !== "A") return;
-    if (next.waterfall.status !== "running") return;
-
-    next.waterfall.status = "ended";
-    next.waterfall.endsAt = null;
-    next.deckLocked = false;
-
-    // AFTER round ends, advance turn
-    next.turn = advanceTurn(next);
-
-    hostBroadcast(next);
-  }
-
-  function doHeavenStart(gs: GameState) {
-    if (!isHost()) return;
-    const next = clone(gs);
-    if (parseCard(next.currentCard).rank !== "7") return;
-    if (next.heaven.status === "running") return;
-
-    // drawer can start whenever (while 7 is the current card)
-    if (!next.heaven.drawer) return;
-
-    const participants = getTurnOrder(next);
-    next.heaven.status = "running";
-    next.heaven.startedAt = nowMs();
-    next.heaven.endsAt = (next.heaven.startedAt || nowMs()) + 15000; // safety so it never gets stuck
-    next.heaven.participants = participants;
-    next.heaven.taps = [];
-    next.heaven.loser = null;
-
-    next.deckLocked = true;
-
-    // stay on drawer until round is over
-    next.turn = next.heaven.drawer;
-
-    hostBroadcast(next);
-
-    if (next.heaven.endsAt) scheduleHeavenEnd(next.heaven.endsAt);
-  }
-
-  function doHeavenTap(gs: GameState, who: string) {
-    if (!isHost()) return;
-    const next = clone(gs);
-    if (parseCard(next.currentCard).rank !== "7") return;
-    if (next.heaven.status !== "running") return;
-
-    // only count taps from participants snapshot
-    if (!next.heaven.participants.includes(who)) return;
-
-    if (!next.heaven.taps.includes(who)) next.heaven.taps.push(who);
-
-    hostBroadcast(next);
-
-    // if everyone tapped, end immediately
-    if (next.heaven.taps.length >= next.heaven.participants.length) {
-      doHeavenEnd(next, "allTapped");
-    }
-  }
-
-  function doHeavenEnd(gs: GameState, _reason: "allTapped" | "timeout" | "host") {
-    if (!isHost()) return;
-    const next = clone(gs);
-    if (parseCard(next.currentCard).rank !== "7") return;
-    if (next.heaven.status !== "running") return;
-
-    // loser = last tapper if all tapped, otherwise first missing (still counts as "last to react")
-    const participants = next.heaven.participants || [];
-    const taps = next.heaven.taps || [];
-
-    const missing = participants.filter((p) => !taps.includes(p));
-    const loser =
-      missing.length > 0 ? missing[missing.length - 1] : taps.length > 0 ? taps[taps.length - 1] : null;
-
-    next.heaven.status = "ended";
-    next.heaven.loser = loser;
-    next.heaven.endsAt = null;
-
-    next.deckLocked = false;
-
-    // AFTER round ends, advance turn
-    next.turn = advanceTurn(next);
-
-    hostBroadcast(next);
+    next.powerRound = null;
+    return next;
   }
 
   async function draw() {
@@ -502,9 +365,6 @@ export default function Page() {
     if (!r) return;
 
     const current = stateRef.current;
-
-    // lock: no drawing during power rounds
-    if (current.deckLocked) return;
 
     // host draws; guests request draw
     if (current.host !== me.current) {
@@ -514,7 +374,9 @@ export default function Page() {
 
     const next = clone(current);
 
-    if (!next.deck.length) next.deck = shuffle(buildDeck());
+    if (!next.deck.length) {
+      next.deck = shuffle(buildDeck());
+    }
 
     const card = next.deck.shift() || null;
     next.currentCard = card;
@@ -523,41 +385,16 @@ export default function Page() {
     next.players[me.current].cardsDrawn++;
     next.lastDrawBy = me.current;
 
+    // Set power holders based on draw (holder persists until replaced by next same card draw)
     const { rank } = parseCard(card);
-
-    // default: unlock unless a power round sets it
-    next.deckLocked = false;
-
-    // reset power states when new card is drawn
-    next.waterfall = { status: "idle", drawer: null, seconds: 0, startedAt: null, endsAt: null };
-    next.heaven = { status: "idle", drawer: null, startedAt: null, endsAt: null, participants: [], taps: [], loser: null };
-
-    // badges (holders)
     if (rank === "7") next.heavenHolder = me.current;
     if (rank === "J") next.thumbHolder = me.current;
     if (rank === "Q") next.qmHolder = me.current;
     if (rank === "K") next.kingHolder = me.current;
 
-    // POWER SETUP
-    if (rank === "A") {
-      // Ace creates a pending waterfall with random timer (drawer controls start)
-      const seconds = randInt(5, 20);
-      next.waterfall = { status: "pending", drawer: me.current, seconds, startedAt: null, endsAt: null };
-      next.deckLocked = true; // no drawing while waiting
-      next.turn = me.current; // stay on drawer until done
-    }
-
-    if (rank === "7") {
-      // Heaven is not auto-started; drawer can start whenever while 7 is current card
-      next.heaven = { status: "idle", drawer: me.current, startedAt: null, endsAt: null, participants: [], taps: [], loser: null };
-      next.deckLocked = true; // no drawing until Heaven ends
-      next.turn = me.current; // stay on drawer until done
-    }
-
-    // if not a lock card, advance turn normally after draw
-    if (!next.deckLocked) {
-      next.turn = advanceTurn(next);
-    }
+    // If holder changed and there was an old unresolved powerRound, keep it (user can clear),
+    // but do not auto-start anything.
+    next.turn = advanceTurn(next);
 
     setState(next);
     await send({ type: "STATE", data: next });
@@ -579,44 +416,46 @@ export default function Page() {
     });
   }
 
-  async function drawerStartWaterfall() {
-    const gs = stateRef.current;
-    if (parseCard(gs.currentCard).rank !== "A") return;
-    if (!canDrawerStartWaterfall(gs)) return;
+  async function startPower(kind: PowerKind) {
+    const current = stateRef.current;
 
-    // only host mutates state; drawer requests if not host
-    if (!isHost()) {
-      await send({ type: "ACTION", action: "WATERFALL_START", by: me.current });
+    // Holder requests; host executes authoritative update
+    if (current.host !== me.current) {
+      await send({ type: "POWER_START", kind, requestedBy: me.current });
       return;
     }
 
-    doWaterfallStart(gs);
+    const next = startPowerRoundHost(current, kind, me.current);
+    setState(next);
+    await send({ type: "STATE", data: next });
   }
 
-  async function drawerStartHeaven() {
-    const gs = stateRef.current;
-    if (parseCard(gs.currentCard).rank !== "7") return;
-    if (!canDrawerStartHeaven(gs)) return;
+  async function tapPower(kind: PowerKind) {
+    const current = stateRef.current;
 
-    if (!isHost()) {
-      await send({ type: "ACTION", action: "HEAVEN_START", by: me.current });
+    // Guests request; host executes authoritative update
+    if (current.host !== me.current) {
+      await send({ type: "POWER_TAP", kind, by: me.current });
       return;
     }
 
-    doHeavenStart(gs);
+    const next = tapPowerHost(current, kind, me.current);
+    setState(next);
+    await send({ type: "STATE", data: next });
   }
 
-  async function heavenTap() {
-    const gs = stateRef.current;
-    if (parseCard(gs.currentCard).rank !== "7") return;
-    if (gs.heaven.status !== "running") return;
+  async function clearPower() {
+    const current = stateRef.current;
 
-    if (!isHost()) {
-      await send({ type: "ACTION", action: "HEAVEN_TAP", by: me.current });
+    // Anyone can request clear; host decides (we'll allow host or holder to clear)
+    if (current.host !== me.current) {
+      await send({ type: "POWER_CLEAR", requestedBy: me.current });
       return;
     }
 
-    doHeavenTap(gs, me.current);
+    const next = clearPowerHost(current);
+    setState(next);
+    await send({ type: "STATE", data: next });
   }
 
   /* =========================
@@ -661,9 +500,7 @@ export default function Page() {
     setJoining(true);
 
     try {
-      const res = await fetch(
-        `/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`
-      );
+      const res = await fetch(`/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`);
       const data = await res.json();
 
       if (!res.ok) throw new Error(data?.error || `Token API failed (${res.status})`);
@@ -700,18 +537,28 @@ export default function Page() {
           const n = clone(s);
           if (n.players[participant.identity]) delete n.players[participant.identity];
 
+          // if turn holder left, advance
           if (n.turn === participant.identity) n.turn = advanceTurn(n);
 
-          // if a holder leaves, clear holder
+          // if a holder leaves, clear that holder
           if (n.heavenHolder === participant.identity) n.heavenHolder = null;
           if (n.thumbHolder === participant.identity) n.thumbHolder = null;
           if (n.qmHolder === participant.identity) n.qmHolder = null;
           if (n.kingHolder === participant.identity) n.kingHolder = null;
 
-          // if running heaven, remove from participants/taps (host will still decide end)
-          if (n.heaven.status === "running") {
-            n.heaven.participants = (n.heaven.participants || []).filter((p) => p !== participant.identity);
-            n.heaven.taps = (n.heaven.taps || []).filter((p) => p !== participant.identity);
+          // if power round active and someone left:
+          // - remove from eligible
+          // - if that completes the round, finalize loser
+          if (n.powerRound?.active) {
+            const pr = n.powerRound;
+            pr.eligible = pr.eligible.filter((id) => id !== participant.identity);
+            pr.tapped = pr.tapped.filter((id) => id !== participant.identity);
+
+            if (pr.eligible.length > 0 && pr.tapped.length >= pr.eligible.length) {
+              pr.active = false;
+              pr.loser = pr.tapped[pr.tapped.length - 1] || null;
+            }
+            n.powerRound = pr;
           }
 
           return n;
@@ -736,25 +583,13 @@ export default function Page() {
             qmHolder: msg.data.qmHolder ?? null,
             kingHolder: msg.data.kingHolder ?? null,
 
-            deckLocked: msg.data.deckLocked ?? false,
-
-            waterfall: msg.data.waterfall ?? { status: "idle", drawer: null, seconds: 0, startedAt: null, endsAt: null },
-            heaven:
-              msg.data.heaven ??
-              ({ status: "idle", drawer: null, startedAt: null, endsAt: null, participants: [], taps: [], loser: null } as HeavenState),
+            powerRound: msg.data.powerRound ?? null,
           };
-
           setState(incoming);
-
-          // if I'm host and see a running round with endsAt, schedule local timer
-          if (incoming.host === me.current) {
-            if (incoming.waterfall.status === "running" && incoming.waterfall.endsAt) scheduleWaterfallEnd(incoming.waterfall.endsAt);
-            if (incoming.heaven.status === "running" && incoming.heaven.endsAt) scheduleHeavenEnd(incoming.heaven.endsAt);
-          }
-
           return;
         }
 
+        // Host: execute draw on request
         if (msg.type === "DRAW") {
           const current = stateRef.current;
           if (roomRef.current && me.current && current.host === me.current) {
@@ -763,6 +598,55 @@ export default function Page() {
           return;
         }
 
+        // Host: start power on request
+        if (msg.type === "POWER_START") {
+          const current = stateRef.current;
+          if (current.host === me.current) {
+            const requestedBy = msg.requestedBy as string;
+            const kind = msg.kind as PowerKind;
+            const next = startPowerRoundHost(current, kind, requestedBy);
+            setState(next);
+            send({ type: "STATE", data: next });
+          }
+          return;
+        }
+
+        // Host: tap power on request
+        if (msg.type === "POWER_TAP") {
+          const current = stateRef.current;
+          if (current.host === me.current) {
+            const by = msg.by as string;
+            const kind = msg.kind as PowerKind;
+            const next = tapPowerHost(current, kind, by);
+            setState(next);
+            send({ type: "STATE", data: next });
+          }
+          return;
+        }
+
+        // Host: clear power (allow host OR holder who requested)
+        if (msg.type === "POWER_CLEAR") {
+          const current = stateRef.current;
+          if (current.host === me.current) {
+            const requestedBy = msg.requestedBy as string;
+
+            const pr = current.powerRound;
+            const holder =
+              pr?.kind === "heaven" ? current.heavenHolder : pr?.kind === "thumb" ? current.thumbHolder : null;
+
+            if (!pr) return;
+
+            const allowed = requestedBy === current.host || (holder && requestedBy === holder);
+            if (!allowed) return;
+
+            const next = clearPowerHost(current);
+            setState(next);
+            send({ type: "STATE", data: next });
+          }
+          return;
+        }
+
+        // Player stat updates
         if (msg.type === "UPDATE") {
           setState((s) => {
             const n = clone(s);
@@ -770,45 +654,6 @@ export default function Page() {
             Object.assign(n.players[msg.id], msg.patch);
             return n;
           });
-          return;
-        }
-
-        if (msg.type === "ACTION") {
-          const gs = stateRef.current;
-          // only host applies actions
-          if (!isHost()) return;
-
-          if (msg.action === "WATERFALL_START") {
-            // only drawer can start
-            if (gs.waterfall.drawer && msg.by === gs.waterfall.drawer && parseCard(gs.currentCard).rank === "A") {
-              doWaterfallStart(gs);
-            }
-            return;
-          }
-
-          if (msg.action === "HEAVEN_START") {
-            if (gs.heaven.drawer && msg.by === gs.heaven.drawer && parseCard(gs.currentCard).rank === "7") {
-              doHeavenStart(gs);
-            }
-            return;
-          }
-
-          if (msg.action === "HEAVEN_TAP") {
-            doHeavenTap(gs, msg.by);
-            return;
-          }
-
-          if (msg.action === "HEAVEN_END") {
-            doHeavenEnd(gs, "host");
-            return;
-          }
-
-          if (msg.action === "WATERFALL_END") {
-            doWaterfallEnd(gs, "host");
-            return;
-          }
-
-          return;
         }
       });
 
@@ -836,6 +681,7 @@ export default function Page() {
       setState(next);
       await send({ type: "STATE", data: next });
 
+      // enable camera/mic
       try {
         await room.localParticipant.setCameraEnabled(true);
         await room.localParticipant.setMicrophoneEnabled(true);
@@ -859,8 +705,6 @@ export default function Page() {
 
   function disconnect() {
     setErrMsg("");
-    clearTimers();
-
     const r = roomRef.current;
     if (r) {
       try {
@@ -869,7 +713,7 @@ export default function Page() {
     }
     roomRef.current = null;
 
-    setState(clone(initialState));
+    setState(clone(emptyState));
     setConnected(false);
   }
 
@@ -897,8 +741,6 @@ export default function Page() {
   const ruleText = useMemo(() => ruleForCard(state.currentCard), [state.currentCard]);
   const turnLabel = state.turn || state.host || "—";
 
-  const deckCountLabel = state.deck.length;
-
   function badgeRowForPlayer(id: string) {
     const b: string[] = [];
     if (state.heavenHolder === id) b.push("☁️");
@@ -907,6 +749,20 @@ export default function Page() {
     if (state.kingHolder === id) b.push("👑");
     return b.join(" ");
   }
+
+  const activePR = state.powerRound?.active ? state.powerRound : null;
+  const prKind = state.powerRound?.kind ?? null;
+
+  const iAmHeavenHolder = state.heavenHolder === me.current;
+  const iAmThumbHolder = state.thumbHolder === me.current;
+
+  const canStartHeaven = canStartPower(state, "heaven", me.current);
+  const canStartThumb = canStartPower(state, "thumb", me.current);
+
+  const iCanTap =
+    activePR && me.current && activePR.eligible.includes(me.current) && !activePR.tapped.includes(me.current);
+
+  const showPowerPanel = true; // always show holder controls area (small)
 
   function CardFace({ card }: { card: string | null }) {
     const { rank: rnk, suit: sut } = parseCard(card);
@@ -942,51 +798,13 @@ export default function Page() {
     );
   }
 
-  const isDeckLocked = state.deckLocked;
-
-  const showWaterfallPanel = parseCard(state.currentCard).rank === "A";
-  const showHeavenPanel = parseCard(state.currentCard).rank === "7";
-
-  const wfSecondsLeft = msToSecondsLeft(state.waterfall.endsAt);
-  const hvSecondsLeft = msToSecondsLeft(state.heaven.endsAt);
-
-  const canStartWaterfall = showWaterfallPanel && canDrawerStartWaterfall(state);
-  const canStartHeaven = showHeavenPanel && canDrawerStartHeaven(state);
-
-  const heavenIsRunning = showHeavenPanel && state.heaven.status === "running";
-  const heavenTapDisabled =
-    !heavenIsRunning ||
-    !state.heaven.participants.includes(me.current) ||
-    state.heaven.taps.includes(me.current);
-
-  const heavenTapLabel = heavenTapDisabled
-    ? state.heaven.taps.includes(me.current)
-      ? "TAPPED"
-      : "WAITING"
-    : "TAP (HEAVEN)";
-
   return (
     <div className="appB">
+      {/* Small safety styles + new UI bits (turn highlight + power buttons) */}
       <style jsx global>{`
-        .logoImgB {
-          width: 40px;
-          height: 40px;
-          border-radius: 12px;
-          object-fit: cover;
-          border: 1px solid rgba(148, 163, 184, 0.18);
-          background: rgba(2, 6, 23, 0.35);
-          flex: 0 0 auto;
-        }
-        .fsBtnB {
-          border: 0;
-          border-radius: 14px;
-          padding: 8px 10px;
-          font-weight: 900;
-          color: rgba(226, 232, 240, 0.95);
-          background: rgba(148, 163, 184, 0.14);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          cursor: pointer;
-          white-space: nowrap;
+        .turnActiveB {
+          box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.55), 0 0 0 6px rgba(34, 197, 94, 0.14);
+          border-color: rgba(34, 197, 94, 0.35) !important;
         }
         .powerPillB {
           position: absolute;
@@ -1004,62 +822,67 @@ export default function Page() {
           text-overflow: ellipsis;
           white-space: nowrap;
         }
-        .turnGlowB {
-          outline: 2px solid rgba(34, 197, 94, 0.28);
-          outline-offset: -2px;
-          box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.08);
-        }
-        .lockPillB {
-          padding: 8px 10px;
-          border-radius: 999px;
-          font-size: 12px;
-          font-weight: 1000;
-          background: rgba(2, 6, 23, 0.35);
-          border: 1px solid rgba(148, 163, 184, 0.16);
-          opacity: 0.95;
-          white-space: nowrap;
-        }
-        .powerPanelB {
+        .powerBarB {
           margin-top: 10px;
+          display: grid;
+          gap: 8px;
+        }
+        .powerRowB {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          justify-content: space-between;
+          padding: 10px 12px;
           border-radius: 16px;
           border: 1px solid rgba(148, 163, 184, 0.14);
           background: rgba(2, 6, 23, 0.18);
-          padding: 10px;
-          display: grid;
-          gap: 10px;
         }
-        .powerLineB {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 10px;
+        .powerLeftB {
+          display: grid;
+          gap: 4px;
+          min-width: 0;
+        }
+        .powerTitleB {
           font-weight: 1000;
           font-size: 12px;
-          opacity: 0.95;
+          letter-spacing: 0.06em;
+          opacity: 0.92;
+        }
+        .powerSubB {
+          font-size: 12px;
+          font-weight: 900;
+          opacity: 0.78;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .powerBtnB {
-          width: 100%;
           border: 0;
-          border-radius: 18px;
-          padding: 16px 14px;
-          font-weight: 1100;
-          font-size: 18px;
-          letter-spacing: 0.08em;
+          border-radius: 16px;
+          padding: 10px 12px;
+          font-weight: 1000;
+          letter-spacing: 0.06em;
           color: rgba(226, 232, 240, 0.95);
           background: linear-gradient(180deg, rgba(34, 197, 94, 0.24), rgba(2, 6, 23, 0.35));
           border: 1px solid rgba(34, 197, 94, 0.22);
           cursor: pointer;
+          white-space: nowrap;
         }
         .powerBtnB:disabled {
           opacity: 0.55;
           cursor: default;
         }
-        .dangerBtnB {
-          background: linear-gradient(180deg, rgba(248, 113, 113, 0.28), rgba(2, 6, 23, 0.35));
+        .powerTapB {
+          background: linear-gradient(180deg, rgba(248, 113, 113, 0.22), rgba(2, 6, 23, 0.35));
           border: 1px solid rgba(248, 113, 113, 0.22);
+        }
+        .powerClearB {
+          background: rgba(148, 163, 184, 0.16);
+          border: 1px solid rgba(148, 163, 184, 0.16);
         }
       `}</style>
 
+      {/* TOP BAR */}
       <div className="topbarB">
         <div className="brandB">
           <img className="logoImgB" src="/kylesadick-logo.png" alt="KylesADick logo" />
@@ -1113,6 +936,7 @@ export default function Page() {
         </div>
       ) : (
         <div className="shellB">
+          {/* MAIN: VIDEO */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
@@ -1146,10 +970,10 @@ export default function Page() {
 
                 const isMe = id === me.current;
                 const badges = badgeRowForPlayer(id);
-                const isTurn = id === turnLabel;
+                const isTurn = !!state.turn && id === state.turn;
 
                 return (
-                  <div key={id} className={`vTile ${isTurn ? "turnGlowB" : ""}`} data-id={id}>
+                  <div key={id} className={`vTile ${isTurn ? "turnActiveB" : ""}`} data-id={id}>
                     <video
                       data-video-for={id}
                       autoPlay
@@ -1166,9 +990,10 @@ export default function Page() {
             </div>
           </div>
 
+          {/* BOTTOM */}
           <div className="bottomBarB">
             <div className="cardB deckMiniB">
-              <button className="drawComboB" onClick={draw} disabled={isDeckLocked}>
+              <button className="drawComboB" onClick={draw}>
                 <div className="cardSquareB">
                   <CardFace card={state.currentCard} />
                 </div>
@@ -1177,69 +1002,103 @@ export default function Page() {
                   <div className="drawTitleB">TURN</div>
                   <div className="turnLineB">{turnLabel}</div>
                   <div className="ruleLineB">{ruleText}</div>
-                  <div className="tapLineB">
-                    {isDeckLocked
-                      ? "Deck locked"
-                      : state.host === me.current
-                      ? "Tap to draw"
-                      : "Tap to request draw"}
-                  </div>
+                  <div className="tapLineB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
                 </div>
 
                 <div className="drawMetaB">
-                  <div className="metaPillB">🃏 {deckCountLabel}</div>
+                  <div className="metaPillB">🃏 {state.deck.length}</div>
                   <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
                 </div>
               </button>
 
-              {/* POWER: ACE (drawer starts) */}
-              {showWaterfallPanel ? (
-                <div className="powerPanelB">
-                  <div className="powerLineB">
-                    <div>
-                      WATERFALL · {state.waterfall.seconds ? `${state.waterfall.seconds}s` : "—"} (random)
+              {/* POWER PANEL (Heaven / Thumb) */}
+              {showPowerPanel ? (
+                <div className="powerBarB">
+                  <div className="powerRowB">
+                    <div className="powerLeftB">
+                      <div className="powerTitleB">☁️ HEAVEN POWER</div>
+                      <div className="powerSubB">
+                        Holder: <b>{state.heavenHolder || "—"}</b>
+                        {activePR?.kind === "heaven" ? (
+                          <>
+                            {" "}
+                            · <b>ACTIVE</b> ({activePR.tapped.length}/{activePR.eligible.length})
+                          </>
+                        ) : state.powerRound?.kind === "heaven" && state.powerRound?.loser ? (
+                          <>
+                            {" "}
+                            · Loser: <b>{state.powerRound.loser}</b>
+                          </>
+                        ) : null}
+                      </div>
                     </div>
-                    <div className="lockPillB">{state.waterfall.status === "running" ? `⏳ ${wfSecondsLeft}s` : "🔒"}</div>
+
+                    {activePR?.kind === "heaven" ? (
+                      <>
+                        <button className="powerBtnB powerTapB" onClick={() => tapPower("heaven")} disabled={!iCanTap}>
+                          TAP
+                        </button>
+                      </>
+                    ) : (
+                      <button className="powerBtnB" onClick={() => startPower("heaven")} disabled={!canStartHeaven}>
+                        {iAmHeavenHolder ? "START" : "START"}
+                      </button>
+                    )}
                   </div>
 
-                  <div className="noteB" style={{ opacity: 0.85, fontWeight: 900 }}>
-                    Drawer starts when ready. No draws until it ends. Direction clockwise.
-                  </div>
-
-                  <button className="powerBtnB" onClick={drawerStartWaterfall} disabled={!canStartWaterfall}>
-                    READY / START WATERFALL
-                  </button>
-                </div>
-              ) : null}
-
-              {/* POWER: HEAVEN (drawer starts; last to react drinks) */}
-              {showHeavenPanel ? (
-                <div className="powerPanelB">
-                  <div className="powerLineB">
-                    <div>HEAVEN</div>
-                    <div className="lockPillB">
-                      {state.heaven.status === "running" ? `⏳ ${hvSecondsLeft}s` : "🔒"}
+                  <div className="powerRowB">
+                    <div className="powerLeftB">
+                      <div className="powerTitleB">👍 THUMB POWER</div>
+                      <div className="powerSubB">
+                        Holder: <b>{state.thumbHolder || "—"}</b>
+                        {activePR?.kind === "thumb" ? (
+                          <>
+                            {" "}
+                            · <b>ACTIVE</b> ({activePR.tapped.length}/{activePR.eligible.length})
+                          </>
+                        ) : state.powerRound?.kind === "thumb" && state.powerRound?.loser ? (
+                          <>
+                            {" "}
+                            · Loser: <b>{state.powerRound.loser}</b>
+                          </>
+                        ) : null}
+                      </div>
                     </div>
+
+                    {activePR?.kind === "thumb" ? (
+                      <button className="powerBtnB powerTapB" onClick={() => tapPower("thumb")} disabled={!iCanTap}>
+                        TAP
+                      </button>
+                    ) : (
+                      <button className="powerBtnB" onClick={() => startPower("thumb")} disabled={!canStartThumb}>
+                        {iAmThumbHolder ? "START" : "START"}
+                      </button>
+                    )}
                   </div>
 
-                  <div className="noteB" style={{ opacity: 0.85, fontWeight: 900 }}>
-                    Drawer can start whenever. Everyone taps once. Last to react drinks.
-                    {state.heaven.loser ? ` Loser: ${state.heaven.loser}` : ""}
-                  </div>
+                  {/* Clear button when there is a finished/active power round */}
+                  {state.powerRound ? (
+                    <div className="powerRowB">
+                      <div className="powerLeftB">
+                        <div className="powerTitleB">POWER ROUND</div>
+                        <div className="powerSubB">
+                          {state.powerRound.active ? (
+                            <>
+                              Active: <b>{kindToLabel(state.powerRound.kind)}</b> · Started by{" "}
+                              <b>{state.powerRound.startedBy}</b>
+                            </>
+                          ) : (
+                            <>
+                              Last: <b>{kindToLabel(state.powerRound.kind)}</b> · Loser:{" "}
+                              <b>{state.powerRound.loser || "—"}</b>
+                            </>
+                          )}
+                        </div>
+                      </div>
 
-                  {state.heaven.status !== "running" ? (
-                    <button className="powerBtnB" onClick={drawerStartHeaven} disabled={!canStartHeaven}>
-                      START HEAVEN
-                    </button>
-                  ) : (
-                    <button className="powerBtnB dangerBtnB" onClick={heavenTap} disabled={heavenTapDisabled}>
-                      {heavenTapLabel}
-                    </button>
-                  )}
-
-                  {state.heaven.status === "running" ? (
-                    <div className="noteB" style={{ opacity: 0.85, fontWeight: 900 }}>
-                      Taps: {state.heaven.taps.length}/{state.heaven.participants.length}
+                      <button className="powerBtnB powerClearB" onClick={clearPower}>
+                        CLEAR
+                      </button>
                     </div>
                   ) : null}
                 </div>
@@ -1286,6 +1145,7 @@ export default function Page() {
         </div>
       )}
 
+      {/* Attach local tracks whenever we connect + tiles exist */}
       <AttachLocalOnConnect connected={connected} me={me} roomRef={roomRef} attachLocalTracks={attachLocalTracks} />
     </div>
   );
@@ -1320,4 +1180,4 @@ function AttachLocalOnConnect({
   }, [connected, me, roomRef, attachLocalTracks]);
 
   return null;
-}
+     }

@@ -14,17 +14,61 @@ type PlayerStats = {
   cardsDrawn: number;
 };
 
+type PowerType = "HEAVEN" | "THUMB";
+
+type ActiveCall = {
+  id: string;
+  type: PowerType;
+  by: string;
+  endsAt: number; // ms epoch
+  taps: Record<string, number>; // id -> tapTime(ms epoch)
+};
+
+type ActiveRule = {
+  id: string;
+  name: string;
+  by: string;
+  createdAt: number;
+};
+
 type GameState = {
   host: string | null;
   deck: string[];
   currentCard: string | null;
   players: Record<string, PlayerStats>;
+
+  // ===== Power engine
+  powers: {
+    heavenHolder: string | null; // 7
+    thumbHolder: string | null; // J
+    questionMaster: string | null; // Q
+    ruleMaster: string | null; // K (foundation; not fully used yet)
+  };
+
+  cooldowns: {
+    heavenReadyAt: number; // epoch ms
+    thumbReadyAt: number; // epoch ms
+  };
+
+  activeCall: ActiveCall | null;
+
+  // ===== Mate engine (directed, stackable, chainable)
+  matesOut: Record<string, string[]>; // from -> [to...]
+
+  // ===== Rules (K) foundation
+  activeRules: ActiveRule[];
 };
+
+type Layout = "l1" | "l2" | "l3" | "l4" | "l5" | "l6";
 
 type Msg =
   | { type: "STATE"; data: GameState }
-  | { type: "DRAW" }
-  | { type: "UPDATE"; id: string; patch: Partial<PlayerStats> };
+  | { type: "DRAW" } // request draw (non-host)
+  | { type: "DRINK_REQ"; by: string; target: string; delta: number; reason: string } // to host
+  | { type: "SET_MATE_REQ"; by: string; to: string } // 8: by -> to
+  | { type: "CALL_START_REQ"; callType: PowerType; by: string } // 7/J trigger
+  | { type: "CALL_TAP"; callId: string; by: string; t: number } // reaction tap
+  | { type: "QM_GOTCHA_REQ"; by: string; target: string };
 
 /* =========================
    HELPERS
@@ -63,40 +107,29 @@ function decode(buf: Uint8Array) {
   }
 }
 
-function isEmptySlot(id: string) {
-  return id.startsWith("__empty__");
-}
-
-function parseCard(card: string | null): { rank: string; suit: string } {
-  if (!card) return { rank: "—", suit: "" };
-  // card is like "10♥" or "A♠"
+function rankOf(card: string | null): string | null {
+  if (!card) return null;
+  // card is like "10♠" or "A♦"
   const suit = card.slice(-1);
-  const rank = card.slice(0, -1) || "—";
-  return { rank, suit };
+  const r = card.slice(0, card.length - suit.length);
+  return r || null;
 }
 
-/* =========================
-   FULLSCREEN
-========================= */
-
-async function enterFullscreen() {
-  const el = document.documentElement;
-  // @ts-ignore
-  if (el.requestFullscreen) return el.requestFullscreen();
-  // @ts-ignore
-  if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+function computeVideoLayout(count: number): Layout {
+  if (count <= 1) return "l1";
+  if (count === 2) return "l2";
+  if (count === 3) return "l3";
+  if (count === 4) return "l4";
+  if (count === 5) return "l5";
+  return "l6";
 }
 
-async function exitFullscreen() {
-  // @ts-ignore
-  if (document.exitFullscreen) return document.exitFullscreen();
-  // @ts-ignore
-  if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+function nowMs() {
+  return Date.now();
 }
 
-function isFullscreenNow() {
-  // @ts-ignore
-  return Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
 
 /* =========================
@@ -108,19 +141,17 @@ export default function Page() {
   const me = useRef<string>("");
   const videoRef = useRef<HTMLDivElement>(null);
 
-  const stateRef = useRef<GameState>({
-    host: null,
-    deck: [],
-    currentCard: null,
-    players: {},
-  });
+  const callTimerRef = useRef<number | null>(null);
 
   const [roomCode, setRoomCode] = useState("kad");
-  const [name, setName] = useState(""); // ✅ start blank
+  const [name, setName] = useState(""); // starts blank (as requested)
 
   const [connected, setConnected] = useState(false);
   const [joining, setJoining] = useState(false);
   const [errMsg, setErrMsg] = useState<string>("");
+
+  // Local UI mode (NOT part of shared state)
+  const [pickMode, setPickMode] = useState<null | { kind: "MATE" | "QM"; by: string }>(null);
 
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -129,31 +160,46 @@ export default function Page() {
     deck: [],
     currentCard: null,
     players: {},
+    powers: {
+      heavenHolder: null,
+      thumbHolder: null,
+      questionMaster: null,
+      ruleMaster: null,
+    },
+    cooldowns: {
+      heavenReadyAt: 0,
+      thumbReadyAt: 0,
+    },
+    activeCall: null,
+    matesOut: {},
+    activeRules: [],
   });
 
+  const stateRef = useRef<GameState>(state);
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
+  /* =========================
+     FULLSCREEN
+  ========================= */
+
   useEffect(() => {
-    const onFs = () => setIsFullscreen(isFullscreenNow());
+    const onFs = () => setIsFullscreen(!!document.fullscreenElement);
     onFs();
     document.addEventListener("fullscreenchange", onFs);
-    // @ts-ignore
-    document.addEventListener("webkitfullscreenchange", onFs);
-    return () => {
-      document.removeEventListener("fullscreenchange", onFs);
-      // @ts-ignore
-      document.removeEventListener("webkitfullscreenchange", onFs);
-    };
+    return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
   async function toggleFullscreen() {
     try {
-      if (isFullscreenNow()) await exitFullscreen();
-      else await enterFullscreen();
-    } catch {
-      // ignore
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (e: any) {
+      setErrMsg(`Fullscreen failed: ${e?.message || e}`);
     }
   }
 
@@ -167,11 +213,9 @@ export default function Page() {
 
     let el = root.querySelector(`[data-id="${CSS.escape(id)}"]`) as HTMLDivElement | null;
 
-    const empty = isEmptySlot(id);
-
     if (!el) {
       el = document.createElement("div");
-      el.className = empty ? "vTile vEmpty" : "vTile";
+      el.className = "vTile";
       el.dataset.id = id;
 
       const v = document.createElement("video");
@@ -181,24 +225,14 @@ export default function Page() {
 
       const tag = document.createElement("div");
       tag.className = "vTag";
-      tag.innerText = empty ? "Empty" : id;
+      tag.innerText = id;
 
-      const center = document.createElement("div");
-      center.className = "vCenter";
-      center.innerText = empty ? "+" : "";
+      const meta = document.createElement("div");
+      meta.className = "vMeta";
+      meta.innerText = "";
 
-      el.append(v, tag, center);
+      el.append(v, tag, meta);
       root.append(el);
-    } else {
-      // keep class/tag up to date if tile changes role
-      if (empty) el.classList.add("vEmpty");
-      else el.classList.remove("vEmpty");
-
-      const tag = el.querySelector(".vTag") as HTMLDivElement | null;
-      if (tag) tag.innerText = empty ? "Empty" : id;
-
-      const center = el.querySelector(".vCenter") as HTMLDivElement | null;
-      if (center) center.innerText = empty ? "+" : "";
     }
 
     return el;
@@ -221,22 +255,10 @@ export default function Page() {
       if (id) map.set(id, el as HTMLElement);
     });
 
-    // Ensure every tile exists, then append in order
     for (const id of order) {
-      const existing = map.get(id);
-      if (existing) {
-        root.appendChild(existing);
-      } else {
-        const created = ensureTile(id);
-        if (created) root.appendChild(created);
-      }
+      const el = map.get(id);
+      if (el) root.appendChild(el);
     }
-
-    // Remove any stray tiles not in order (cleanup)
-    Array.from(root.querySelectorAll(".vTile")).forEach((el) => {
-      const id = (el as HTMLElement).dataset.id || "";
-      if (!order.includes(id)) el.remove();
-    });
   }
 
   async function attachLocalTracks(room: Room) {
@@ -261,21 +283,111 @@ export default function Page() {
     await r.localParticipant.publishData(encode(msg), { reliable: true });
   }
 
-  /* =========================
-     GAME LOGIC
-  ========================= */
-
   function ensurePlayer(gs: GameState, id: string) {
     if (!gs.players[id]) {
       gs.players[id] = { name: id, drinks: 0, cardsDrawn: 0 };
     }
   }
 
-  async function draw() {
-    const r = roomRef.current;
-    if (!r) return;
+  function addMate(gs: GameState, from: string, to: string) {
+    if (!from || !to || from === to) return;
+    if (!gs.matesOut[from]) gs.matesOut[from] = [];
+    if (!gs.matesOut[from].includes(to)) gs.matesOut[from].push(to);
+  }
 
+  function applyDrinkWithMates(gs: GameState, startId: string, delta: number) {
+    // Directed graph traversal: apply delta to start + all reachable via matesOut.
+    const visited = new Set<string>();
+    const queue: string[] = [];
+
+    const push = (id: string) => {
+      if (!id) return;
+      if (visited.has(id)) return;
+      visited.add(id);
+      queue.push(id);
+    };
+
+    push(startId);
+
+    while (queue.length) {
+      const id = queue.shift()!;
+      ensurePlayer(gs, id);
+      gs.players[id].drinks = Math.max(0, gs.players[id].drinks + delta);
+
+      const outs = gs.matesOut[id] || [];
+      for (const to of outs) push(to);
+    }
+  }
+
+  function scheduleResolveIfHost(next: GameState) {
+    if (!next.activeCall) return;
+    if (next.host !== me.current) return;
+
+    const delay = Math.max(0, next.activeCall.endsAt - nowMs());
+    if (callTimerRef.current) {
+      window.clearTimeout(callTimerRef.current);
+      callTimerRef.current = null;
+    }
+
+    callTimerRef.current = window.setTimeout(() => {
+      const cur = stateRef.current;
+      // Only resolve if still same call
+      if (!cur.activeCall) return;
+      if (cur.host !== me.current) return;
+      resolveCallAsHost(cur);
+    }, delay + 25);
+  }
+
+  function resolveCallAsHost(gs: GameState) {
+    const next = clone(gs);
+    const call = next.activeCall;
+    if (!call) return;
+
+    const roster = Object.keys(next.players).filter(Boolean);
+    if (!roster.length) {
+      next.activeCall = null;
+      setState(next);
+      send({ type: "STATE", data: next });
+      return;
+    }
+
+    // Determine loser = max tap time; non-tappers treated as Infinity.
+    // If multiple Infinity, pick the first in ordered roster (stable).
+    let loser = roster[0];
+    let worst = -1;
+
+    for (const id of roster) {
+      const t = call.taps[id];
+      const val = typeof t === "number" ? t : Number.POSITIVE_INFINITY;
+      if (val > worst) {
+        worst = val;
+        loser = id;
+      } else if (val === worst && val === Number.POSITIVE_INFINITY) {
+        // keep earlier loser
+      }
+    }
+
+    // Apply drink (+1) with mate chains.
+    applyDrinkWithMates(next, loser, 1);
+
+    // Set cooldown on the power used
+    const readyAt = nowMs() + 15_000;
+    if (call.type === "HEAVEN") next.cooldowns.heavenReadyAt = readyAt;
+    if (call.type === "THUMB") next.cooldowns.thumbReadyAt = readyAt;
+
+    next.activeCall = null;
+
+    setState(next);
+    send({ type: "STATE", data: next });
+  }
+
+  /* =========================
+     GAME ACTIONS
+  ========================= */
+
+  async function draw() {
     const current = stateRef.current;
+    if (!roomRef.current) return;
 
     if (current.host !== me.current) {
       await send({ type: "DRAW" });
@@ -284,9 +396,7 @@ export default function Page() {
 
     const next = clone(current);
 
-    if (!next.deck.length) {
-      next.deck = shuffle(buildDeck());
-    }
+    if (!next.deck.length) next.deck = shuffle(buildDeck());
 
     const card = next.deck.shift() || null;
     next.currentCard = card;
@@ -294,24 +404,88 @@ export default function Page() {
     ensurePlayer(next, me.current);
     next.players[me.current].cardsDrawn++;
 
+    // POWER ASSIGNMENTS ON DRAW
+    const r = rankOf(card);
+
+    if (r === "7") {
+      next.powers.heavenHolder = me.current;
+      // No auto drink; holder can trigger anytime
+    } else if (r === "J") {
+      next.powers.thumbHolder = me.current;
+    } else if (r === "Q") {
+      next.powers.questionMaster = me.current;
+    } else if (r === "8") {
+      // Mate selection is a local UX: drawer picks someone.
+      // We just put UI into pick mode locally for the drawer.
+      // Actual mate link is host authoritative via SET_MATE_REQ.
+      setPickMode({ kind: "MATE", by: me.current });
+    } else if (r === "3") {
+      // 3 = Me (auto +1 to drawer, with mates)
+      applyDrinkWithMates(next, me.current, 1);
+    } else if (r === "6") {
+      // 6 = Dicks -> everyone drinks (+1 to all)
+      // Implemented as apply to each player once (mates could chain, but it's already "everyone"; keep simple: +1 to all)
+      for (const id of Object.keys(next.players)) {
+        ensurePlayer(next, id);
+        next.players[id].drinks = Math.max(0, next.players[id].drinks + 1);
+      }
+    }
+    // 2/4/5/9/10/K handled by UI/modes later; we’re implementing power engine foundation now.
+
     setState(next);
     await send({ type: "STATE", data: next });
   }
 
-  async function changeDrink(n: number) {
+  async function requestDrink(delta: number, reason: string) {
     const current = stateRef.current;
-    const next = clone(current);
-    ensurePlayer(next, me.current);
+    if (!roomRef.current) return;
+    if (!me.current) return;
 
-    next.players[me.current].drinks = Math.max(0, next.players[me.current].drinks + n);
+    if (!current.host) return;
 
-    setState(next);
+    await send({ type: "DRINK_REQ", by: me.current, target: me.current, delta, reason });
+  }
 
-    await send({
-      type: "UPDATE",
-      id: me.current,
-      patch: { drinks: next.players[me.current].drinks },
-    });
+  async function startCall(type: PowerType) {
+    const current = stateRef.current;
+    if (!roomRef.current) return;
+    if (!me.current) return;
+
+    await send({ type: "CALL_START_REQ", callType: type, by: me.current });
+  }
+
+  async function tapCall() {
+    const current = stateRef.current;
+    if (!roomRef.current) return;
+    if (!me.current) return;
+    if (!current.activeCall) return;
+
+    const callId = current.activeCall.id;
+    await send({ type: "CALL_TAP", callId, by: me.current, t: nowMs() });
+  }
+
+  async function qmGotchaStart() {
+    const current = stateRef.current;
+    if (current.powers.questionMaster !== me.current) return;
+    setPickMode({ kind: "QM", by: me.current });
+  }
+
+  async function onPickTarget(targetId: string) {
+    const current = stateRef.current;
+    if (!pickMode) return;
+
+    if (pickMode.kind === "MATE") {
+      // request mate link: by -> target
+      await send({ type: "SET_MATE_REQ", by: pickMode.by, to: targetId });
+      setPickMode(null);
+      return;
+    }
+
+    if (pickMode.kind === "QM") {
+      await send({ type: "QM_GOTCHA_REQ", by: pickMode.by, target: targetId });
+      setPickMode(null);
+      return;
+    }
   }
 
   /* =========================
@@ -332,9 +506,7 @@ export default function Page() {
     setJoining(true);
 
     try {
-      const res = await fetch(
-        `/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`
-      );
+      const res = await fetch(`/api/token?room=${encodeURIComponent(roomName)}&name=${encodeURIComponent(identity)}`);
       const data = await res.json();
 
       if (!res.ok) throw new Error(data?.error || `Token API failed (${res.status})`);
@@ -343,6 +515,8 @@ export default function Page() {
       const room = new Room();
       roomRef.current = room;
       me.current = identity;
+
+      ensureTile(identity);
 
       room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
         setState((s) => {
@@ -353,9 +527,7 @@ export default function Page() {
 
         const tile = ensureTile(participant.identity);
         if (!tile) return;
-        if (track.kind === Track.Kind.Video) {
-          track.attach(tile.querySelector("video")!);
-        }
+        if (track.kind === Track.Kind.Video) track.attach(tile.querySelector("video")!);
       });
 
       room.on(RoomEvent.ParticipantConnected, (participant) => {
@@ -380,26 +552,100 @@ export default function Page() {
         const msg = decode(buf);
         if (!msg) return;
 
+        // ========= Host-authoritative handlers
+        const cur = stateRef.current;
+        const isHost = cur.host === me.current;
+
         if (msg.type === "STATE") {
           setState(msg.data);
+          // if I am host, schedule call resolution if active
+          scheduleResolveIfHost(msg.data);
           return;
         }
 
         if (msg.type === "DRAW") {
-          const current = stateRef.current;
-          if (roomRef.current && me.current && current.host === me.current) {
-            draw();
-          }
+          if (isHost) draw();
           return;
         }
 
-        if (msg.type === "UPDATE") {
-          setState((s) => {
-            const n = clone(s);
-            ensurePlayer(n, msg.id);
-            Object.assign(n.players[msg.id], msg.patch);
-            return n;
-          });
+        if (msg.type === "DRINK_REQ") {
+          if (!isHost) return;
+          const next = clone(cur);
+          ensurePlayer(next, msg.target);
+          applyDrinkWithMates(next, msg.target, msg.delta);
+          setState(next);
+          send({ type: "STATE", data: next });
+          return;
+        }
+
+        if (msg.type === "SET_MATE_REQ") {
+          if (!isHost) return;
+          const next = clone(cur);
+          ensurePlayer(next, msg.by);
+          ensurePlayer(next, msg.to);
+          addMate(next, msg.by, msg.to);
+          setState(next);
+          send({ type: "STATE", data: next });
+          return;
+        }
+
+        if (msg.type === "QM_GOTCHA_REQ") {
+          if (!isHost) return;
+          const next = clone(cur);
+          ensurePlayer(next, msg.target);
+          applyDrinkWithMates(next, msg.target, 1);
+          setState(next);
+          send({ type: "STATE", data: next });
+          return;
+        }
+
+        if (msg.type === "CALL_START_REQ") {
+          if (!isHost) return;
+          const next = clone(cur);
+
+          // Reject if a call is already active
+          if (next.activeCall) return;
+
+          // Holder check + cooldown check
+          const t = nowMs();
+
+          if (msg.callType === "HEAVEN") {
+            if (next.powers.heavenHolder !== msg.by) return;
+            if (t < (next.cooldowns.heavenReadyAt || 0)) return;
+          }
+          if (msg.callType === "THUMB") {
+            if (next.powers.thumbHolder !== msg.by) return;
+            if (t < (next.cooldowns.thumbReadyAt || 0)) return;
+          }
+
+          const endsAt = t + 2600; // reaction window
+          next.activeCall = {
+            id: uid("call"),
+            type: msg.callType,
+            by: msg.by,
+            endsAt,
+            taps: {},
+          };
+
+          setState(next);
+          send({ type: "STATE", data: next });
+          scheduleResolveIfHost(next);
+          return;
+        }
+
+        if (msg.type === "CALL_TAP") {
+          if (!isHost) return;
+          const next = clone(cur);
+          if (!next.activeCall) return;
+          if (next.activeCall.id !== msg.callId) return;
+
+          // record first tap only
+          if (next.activeCall.taps[msg.by] == null) {
+            next.activeCall.taps[msg.by] = msg.t;
+            setState(next);
+            send({ type: "STATE", data: next });
+          }
+          return;
         }
       });
 
@@ -458,18 +704,35 @@ export default function Page() {
 
     if (videoRef.current) videoRef.current.innerHTML = "";
 
+    if (callTimerRef.current) {
+      window.clearTimeout(callTimerRef.current);
+      callTimerRef.current = null;
+    }
+
+    setPickMode(null);
+
     setState({
       host: null,
       deck: [],
       currentCard: null,
       players: {},
+      powers: {
+        heavenHolder: null,
+        thumbHolder: null,
+        questionMaster: null,
+        ruleMaster: null,
+      },
+      cooldowns: { heavenReadyAt: 0, thumbReadyAt: 0 },
+      activeCall: null,
+      matesOut: {},
+      activeRules: [],
     });
 
     setConnected(false);
   }
 
   /* =========================
-     UI / ORDERING / FIXED 6 GRID
+     ORDERING / LAYOUT
   ========================= */
 
   const orderedPlayers = useMemo(() => {
@@ -480,35 +743,107 @@ export default function Page() {
     return [...mine, ...others].slice(0, 6);
   }, [state.players]);
 
-  // ✅ Always render 6 slots (3x2), fill empty spots with placeholders
-  const slots = useMemo(() => {
-    const filled = orderedPlayers.slice(0, 6);
-    const emptiesNeeded = Math.max(0, 6 - filled.length);
-    const empties = Array.from({ length: emptiesNeeded }, (_, i) => `__empty__${i + 1}`);
-    return [...filled, ...empties];
-  }, [orderedPlayers]);
-
-  // Keep tiles ordered + ensure placeholders exist (prevents giant single tile)
   useEffect(() => {
     if (!connected) return;
-    reorderTiles(slots);
+    reorderTiles(orderedPlayers);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected, slots.join("|")]);
+  }, [connected, orderedPlayers.join("|")]);
 
-  const { rank, suit } = parseCard(state.currentCard);
+  const effectiveCount = Math.min(6, Math.max(1, orderedPlayers.length || 1));
+  const layout = computeVideoLayout(effectiveCount);
+
+  /* =========================
+     TILE BADGES + MATES DISPLAY
+  ========================= */
+
+  const powerBadges = useMemo(() => {
+    const badges: Record<string, string[]> = {};
+    const push = (id: string | null, label: string) => {
+      if (!id) return;
+      if (!badges[id]) badges[id] = [];
+      badges[id].push(label);
+    };
+    push(state.powers.heavenHolder, "☁️");
+    push(state.powers.thumbHolder, "👍");
+    push(state.powers.questionMaster, "❓");
+    push(state.powers.ruleMaster, "👑");
+    return badges;
+  }, [state.powers]);
+
+  useEffect(() => {
+    const root = videoRef.current;
+    if (!root) return;
+
+    const tiles = Array.from(root.querySelectorAll(".vTile")) as HTMLDivElement[];
+    for (const tile of tiles) {
+      const id = tile.dataset.id || "";
+      const meta = tile.querySelector(".vMeta") as HTMLDivElement | null;
+      if (!meta) continue;
+
+      const badges = powerBadges[id] || [];
+      const outs = state.matesOut[id] || [];
+
+      const badgeStr = badges.length ? badges.join(" ") : "";
+      const mateStr = outs.length ? `→ ${outs.join(", ")}` : "";
+
+      meta.innerText = [badgeStr, mateStr].filter(Boolean).join("  ");
+    }
+  }, [powerBadges, state.matesOut, connected]);
+
+  /* =========================
+     UI DERIVED
+  ========================= */
+
+  const r = rankOf(state.currentCard);
+  const isHost = state.host === me.current;
+
+  const heavenReadyIn = Math.max(0, state.cooldowns.heavenReadyAt - nowMs());
+  const thumbReadyIn = Math.max(0, state.cooldowns.thumbReadyAt - nowMs());
+
+  const canHeaven =
+    connected &&
+    state.powers.heavenHolder === me.current &&
+    !state.activeCall &&
+    heavenReadyIn === 0;
+
+  const canThumb =
+    connected &&
+    state.powers.thumbHolder === me.current &&
+    !state.activeCall &&
+    thumbReadyIn === 0;
+
+  const canQM = connected && state.powers.questionMaster === me.current && !state.activeCall;
+
+  const showOverlayCall = connected && !!state.activeCall;
+  const overlayTitle = state.activeCall?.type === "HEAVEN" ? "HEAVEN CALLED ☁️" : "THUMB CALLED 👍";
+
+  const overlayLocked = !!state.activeCall && state.activeCall.taps[me.current] != null;
+
+  const deckLeft = state.deck.length;
+
+  // Pick mode highlight / instructions
+  const pickHint =
+    pickMode?.kind === "MATE"
+      ? "Tap a player to add as your mate (one-way)"
+      : pickMode?.kind === "QM"
+      ? "Tap the player who answered (GOTCHA)"
+      : "";
+
+  /* =========================
+     RENDER
+  ========================= */
 
   return (
     <div className="appB">
-      {/* HEADER (minimal) */}
       <div className="topbarB">
         <div className="brandB">
           <div className="logoB">KAD</div>
-          <div className="titleB">KAD Kings</div>
+          <div className="titleOnlyB">KAD-KINGS</div>
         </div>
 
         <div className="topActionsB">
-          <button className="btnB btnTinyB btnGhostB" onClick={toggleFullscreen} type="button">
-            {isFullscreen ? "Exit" : "Fullscreen"}
+          <button className="iconBtnB" onClick={toggleFullscreen} title="Fullscreen">
+            {isFullscreen ? "⤢" : "⤢"}
           </button>
         </div>
       </div>
@@ -517,98 +852,117 @@ export default function Page() {
         <div className="cardB joinCardB">
           <div className="fieldB">
             <div>Room</div>
-            <input
-              value={roomCode}
-              onChange={(e) => setRoomCode(e.target.value)}
-              placeholder="kad"
-              autoCapitalize="none"
-              autoCorrect="off"
-              autoComplete="off"
-            />
+            <input value={roomCode} onChange={(e) => setRoomCode(e.target.value)} placeholder="kad" />
           </div>
 
           <div className="fieldB">
             <div>Name</div>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Your name"
-              autoCapitalize="none"
-              autoCorrect="off"
-              autoComplete="off"
-            />
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Wes" />
           </div>
 
           <div className="rowB">
-            <button className="btnB btnPrimaryB" onClick={connect} disabled={joining} type="button">
+            <button className="btnB btnPrimaryB" onClick={connect} disabled={joining}>
               {joining ? "Joining..." : "Join"}
             </button>
           </div>
 
           {errMsg ? (
-            <div className="noteB noteErrB">{errMsg}</div>
+            <div className="noteB errB">{errMsg}</div>
           ) : (
-            <div className="noteB">If Join does nothing, the error will show here.</div>
+            <div className="noteB">Join, then open the same room on another phone to test sync.</div>
           )}
         </div>
       ) : (
         <div className="shellB">
-          {/* MAIN: PLAYERS (fixed 3x2) */}
+          {/* MAIN: VIDEO */}
           <div className="cardB videoCardB">
             <div className="cardHeadB">
               <h2>Players</h2>
               <div className="rowB" style={{ justifyContent: "flex-end" }}>
-                <div className="pillB">
-                  Host: <b style={{ marginLeft: 6 }}>{state.host || "—"}</b>
-                </div>
-                <button className="btnB btnDangerB btnTinyB" onClick={disconnect} type="button">
+                <div className="tinyPillB">Host: {state.host || "—"}</div>
+                <button className="btnB btnDangerB btnTinyB" onClick={disconnect}>
                   Leave
                 </button>
               </div>
             </div>
 
-            {errMsg ? <div className="noteB noteErrB">{errMsg}</div> : null}
+            {errMsg ? <div className="noteB errB">{errMsg}</div> : null}
+
+            {pickMode ? <div className="pickHintB">{pickHint}</div> : null}
 
             <div
               ref={videoRef}
-              className="videoGridB"
-              data-layout="l6" // ✅ force 3x2 always when connected
+              className={"videoGridB" + (pickMode ? " pickingB" : "")}
+              data-layout={layout}
+              onClick={(e) => {
+                if (!pickMode) return;
+                const target = (e.target as HTMLElement).closest(".vTile") as HTMLDivElement | null;
+                if (!target) return;
+                const id = target.dataset.id || "";
+                if (!id) return;
+                if (pickMode.kind === "MATE" && id === pickMode.by) return; // no self-mate
+                onPickTarget(id);
+              }}
             />
           </div>
 
-          {/* BOTTOM */}
+          {/* BOTTOM: ACTIONS */}
           <div className="bottomBarB">
+            {/* DRAW + CARD (bigger card) */}
             <div className="cardB deckMiniB">
-              <button className="drawComboB" onClick={draw} type="button">
-                {/* ✅ Larger card, same overall area */}
-                <div className="cardHeroB">
-                  <div className="cardFaceB">
-                    <div className="cardTLB">
-                      <div className="cardRankB">{rank}</div>
-                      <div className="cardSuitB">{suit}</div>
-                    </div>
-
-                    <div className="cardCenterB">{suit}</div>
-
-                    <div className="cardBRB">
-                      <div className="cardRankB">{rank}</div>
-                      <div className="cardSuitB">{suit}</div>
-                    </div>
+              <button className="drawComboB" onClick={draw}>
+                <div className="cardSquareB">
+                  <div className="miniCardB">
+                    <div className="miniCornerB">{state.currentCard ? state.currentCard : "—"}</div>
+                    <div className="miniRankB">{r || "—"}</div>
                   </div>
                 </div>
 
                 <div className="drawTextB">
-                  <div className="drawTitleB">DRAW</div>
-                  <div className="drawSubB">{state.host === me.current ? "Tap to draw" : "Tap to request draw"}</div>
+                  <div className="drawTitleB">{state.currentCard ? "CURRENT CARD" : "DRAW CARD"}</div>
+                  <div className="drawSubB">
+                    {isHost ? "Tap to draw" : "Tap to request draw"} · Deck: {deckLeft}
+                  </div>
                 </div>
 
                 <div className="drawMetaB">
-                  <div className="metaPillB">🃏 {state.deck.length}</div>
-                  <div className="metaPillB">{state.host === me.current ? "HOST" : "GUEST"}</div>
+                  <div className="metaPillB">{isHost ? "HOST" : "GUEST"}</div>
+                  <div className="metaPillB">🃏 {deckLeft}</div>
                 </div>
               </button>
+
+              {/* Power buttons row (only show if you hold something) */}
+              <div className="powerRowB">
+                <button
+                  className={"powerBtnB" + (canHeaven ? " onB" : "")}
+                  disabled={!canHeaven}
+                  onClick={() => startCall("HEAVEN")}
+                  title="Heaven (7)"
+                >
+                  ☁️ {state.powers.heavenHolder === me.current ? (heavenReadyIn ? `${Math.ceil(heavenReadyIn / 1000)}s` : "HEAVEN") : "HEAVEN"}
+                </button>
+
+                <button
+                  className={"powerBtnB" + (canThumb ? " onB" : "")}
+                  disabled={!canThumb}
+                  onClick={() => startCall("THUMB")}
+                  title="Thumbmaster (J)"
+                >
+                  👍 {state.powers.thumbHolder === me.current ? (thumbReadyIn ? `${Math.ceil(thumbReadyIn / 1000)}s` : "THUMB") : "THUMB"}
+                </button>
+
+                <button
+                  className={"powerBtnB" + (canQM ? " onB" : "")}
+                  disabled={!canQM}
+                  onClick={qmGotchaStart}
+                  title="Question Master (Q)"
+                >
+                  ❓ {state.powers.questionMaster === me.current ? "GOTCHA" : "QM"}
+                </button>
+              </div>
             </div>
 
+            {/* STATS */}
             <div className="cardB statsMiniB">
               <div className="yourDrinksRowB">
                 <div>
@@ -616,10 +970,10 @@ export default function Page() {
                   <div className="drinkNumB">{state.players[me.current]?.drinks ?? 0}</div>
                 </div>
                 <div className="btnGroupB">
-                  <button className="btnB btnTinyB" onClick={() => changeDrink(-1)} type="button">
+                  <button className="btnB btnTinyB" onClick={() => requestDrink(-1, "manual")}>
                     -1
                   </button>
-                  <button className="btnB btnPrimaryB btnTinyB" onClick={() => changeDrink(1)} type="button">
+                  <button className="btnB btnPrimaryB btnTinyB" onClick={() => requestDrink(1, "manual")}>
                     +1
                   </button>
                 </div>
@@ -629,11 +983,16 @@ export default function Page() {
                 {orderedPlayers.map((id) => {
                   const p = state.players[id];
                   if (!p) return null;
+                  const outs = state.matesOut[id] || [];
                   return (
                     <div key={p.name} className="pRowB">
-                      <div className="pNameB">{p.name}</div>
+                      <div className="pNameB">
+                        {p.name}
+                        {powerBadges[id]?.length ? <span className="pBadgesB"> {powerBadges[id].join(" ")}</span> : null}
+                      </div>
                       <div className="pMetaB">
                         🍺 {p.drinks} · 🃏 {p.cardsDrawn}
+                        {outs.length ? <span className="pMateB"> · → {outs.join(", ")}</span> : null}
                       </div>
                     </div>
                   );
@@ -641,8 +1000,27 @@ export default function Page() {
               </div>
             </div>
           </div>
+
+          {/* POWER CALL OVERLAY */}
+          {showOverlayCall ? (
+            <div className="overlayB">
+              <div className="overlayCardB">
+                <div className="overlayTitleB">{overlayTitle}</div>
+                <div className="overlaySubB">Tap fast. Last to tap drinks.</div>
+
+                <button className={"overlayTapB" + (overlayLocked ? " lockedB" : "")} onClick={tapCall} disabled={overlayLocked}>
+                  {overlayLocked ? "LOCKED" : "TAP"}
+                </button>
+
+                <div className="overlayTimerB">
+                  Ends in{" "}
+                  {Math.max(0, Math.ceil(((state.activeCall?.endsAt || 0) - nowMs()) / 1000))}s
+                </div>
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </div>
   );
-      }
+  }
